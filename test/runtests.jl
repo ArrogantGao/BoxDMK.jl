@@ -19,4 +19,10 @@ using Test
     if isfile(joinpath(@__DIR__, "..", "src", "tree.jl")) && length(methods(BoxDMK.build_tree)) > 0
         include("test_tree.jl")
     end
+    if isfile(joinpath(@__DIR__, "..", "src", "tree_data.jl")) &&
+       isdefined(BoxDMK, :compute_laplacian!) &&
+       length(methods(BoxDMK.compute_laplacian!)) > 0
+        include("test_tree_data.jl")
+    end
+    include("test_passes.jl")
 end

@@ -12,11 +12,17 @@ include("sog.jl")
 if isfile(joinpath(@__DIR__, "proxy.jl"))
     include("proxy.jl")
 end
+if isfile(joinpath(@__DIR__, "passes.jl"))
+    include("passes.jl")
+end
 include("kernels.jl")
 include("basis.jl")
 include("tensor.jl")
 if isfile(joinpath(@__DIR__, "tree.jl"))
     include("tree.jl")
+end
+if isfile(joinpath(@__DIR__, "tree_data.jl"))
+    include("tree_data.jl")
 end
 include("interaction_lists.jl")
 
@@ -26,5 +32,8 @@ export build_tree, build_interaction_lists, bdmk
 export load_sog_nodes
 export taylor_coefficients, taylor_coefficients_grad, taylor_coefficients_hess
 export select_porder, build_proxy_data, density_to_proxy!, proxy_to_potential!
+export compute_laplacian!, compute_bilaplacian!, compute_gradient_density!
+export compute_hessian_density!, eval_asymptotic!, apply_asymptotic!
+export upward_pass!, downward_pass!
 
 end
