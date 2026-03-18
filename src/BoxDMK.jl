@@ -24,6 +24,7 @@ end
 if isfile(joinpath(@__DIR__, "tree_data.jl"))
     include("tree_data.jl")
 end
+include("derivatives.jl")
 include("interaction_lists.jl")
 
 export LaplaceKernel, YukawaKernel, SqrtLaplaceKernel
@@ -34,6 +35,7 @@ export taylor_coefficients, taylor_coefficients_grad, taylor_coefficients_hess
 export select_porder, build_proxy_data, density_to_proxy!, proxy_to_potential!
 export compute_laplacian!, compute_bilaplacian!, compute_gradient_density!
 export compute_hessian_density!, eval_asymptotic!, apply_asymptotic!
+export compute_gradient!, compute_hessian!
 export upward_pass!, downward_pass!
 
 end

@@ -24,5 +24,14 @@ using Test
        length(methods(BoxDMK.compute_laplacian!)) > 0
         include("test_tree_data.jl")
     end
+    if isfile(joinpath(@__DIR__, "..", "src", "local_tables.jl")) &&
+       isdefined(BoxDMK, :build_local_tables) &&
+       length(methods(BoxDMK.build_local_tables)) > 0
+        include("test_local.jl")
+    end
+    include("test_planewave.jl")
+    if isfile(joinpath(@__DIR__, "..", "src", "tree.jl")) && length(methods(BoxDMK.build_tree)) > 0
+        include("test_derivatives.jl")
+    end
     include("test_passes.jl")
 end
