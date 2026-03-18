@@ -26,6 +26,7 @@ if isfile(joinpath(@__DIR__, "tree_data.jl"))
 end
 include("derivatives.jl")
 include("interaction_lists.jl")
+include("planewave.jl")
 
 export LaplaceKernel, YukawaKernel, SqrtLaplaceKernel
 export LegendreBasis, ChebyshevBasis
@@ -37,5 +38,7 @@ export compute_laplacian!, compute_bilaplacian!, compute_gradient_density!
 export compute_hessian_density!, eval_asymptotic!, apply_asymptotic!
 export compute_gradient!, compute_hessian!
 export upward_pass!, downward_pass!
+export get_pw_term_count, get_pw_nodes, build_pw_conversion_tables
+export build_pw_shift_matrices, kernel_fourier_transform, setup_planewave_data
 
 end
