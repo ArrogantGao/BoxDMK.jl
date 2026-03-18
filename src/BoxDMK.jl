@@ -18,10 +18,11 @@ include("tensor.jl")
 if isfile(joinpath(@__DIR__, "tree.jl"))
     include("tree.jl")
 end
+include("interaction_lists.jl")
 
 export LaplaceKernel, YukawaKernel, SqrtLaplaceKernel
 export LegendreBasis, ChebyshevBasis
-export build_tree, bdmk
+export build_tree, build_interaction_lists, bdmk
 export load_sog_nodes
 export taylor_coefficients, taylor_coefficients_grad, taylor_coefficients_hess
 export select_porder, build_proxy_data, density_to_proxy!, proxy_to_potential!
