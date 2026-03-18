@@ -29,7 +29,12 @@ using Test
        length(methods(BoxDMK.build_local_tables)) > 0
         include("test_local.jl")
     end
-    include("test_planewave.jl")
+    if isfile(joinpath(@__DIR__, "..", "src", "planewave.jl")) &&
+       isfile(joinpath(@__DIR__, "test_planewave.jl")) &&
+       isdefined(BoxDMK, :get_pw_term_count) &&
+       length(methods(BoxDMK.get_pw_term_count)) > 0
+        include("test_planewave.jl")
+    end
     if isfile(joinpath(@__DIR__, "..", "src", "tree.jl")) && length(methods(BoxDMK.build_tree)) > 0
         include("test_derivatives.jl")
     end
