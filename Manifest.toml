@@ -1,0 +1,10 @@
+# This file is machine-generated - editing it directly is not advised
+
+julia_version = "1.12.5"
+manifest_format = "2.0"
+project_hash = "85ee7a6d1951ea8e3e0ddbaaddbea4fefbccb96d"
+
+[[deps.BoxDMK]]
+path = "."
+uuid = "aa90dc6b-4abc-4be6-a066-74e02c8a8423"
+version = "1.0.0-DEV"
