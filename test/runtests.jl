@@ -47,4 +47,5 @@ using Test
         include("test_derivatives.jl")
     end
     include("test_passes.jl")
+    include("test_solver.jl")
 end

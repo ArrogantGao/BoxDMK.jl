@@ -30,6 +30,7 @@ include("local_tables.jl")
 include("planewave.jl")
 include("boxfgt.jl")
 include("local.jl")
+include("solver.jl")
 
 export LaplaceKernel, YukawaKernel, SqrtLaplaceKernel
 export LegendreBasis, ChebyshevBasis

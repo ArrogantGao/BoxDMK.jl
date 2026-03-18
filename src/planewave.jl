@@ -174,7 +174,7 @@ function build_pw_shift_matrices(pw_nodes::AbstractVector, boxdim::Real, ndim::I
     nexp = pw_expansion_size(npw, ndim_int)
     ntranslations = (2 * nmax_int + 1)^ndim_int
     shift = Matrix{ComplexF64}(undef, nexp, ntranslations)
-    frequencies = collect(Iterators.product(ntuple(_ -> 1:npw, ndim_int)...))
+    frequencies = vec(collect(Iterators.product(ntuple(_ -> 1:npw, ndim_int)...)))
 
     for offset in Iterators.product(ntuple(_ -> (-nmax_int):nmax_int, ndim_int)...)
         column = _translation_index(offset, nmax_int)
@@ -230,7 +230,7 @@ function setup_planewave_data(
 
     iaddr = zeros(Int, 2, nboxes(tree))
     total = 0
-    ifpwexp_vec = Bool.(ifpwexp)
+    ifpwexp_vec = collect(Bool.(ifpwexp))
 
     for ibox in 1:nboxes(tree)
         if !ifpwexp_vec[ibox]
