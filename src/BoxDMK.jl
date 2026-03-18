@@ -27,6 +27,7 @@ end
 include("derivatives.jl")
 include("interaction_lists.jl")
 include("local_tables.jl")
+include("local.jl")
 
 export LaplaceKernel, YukawaKernel, SqrtLaplaceKernel
 export LegendreBasis, ChebyshevBasis
@@ -39,5 +40,6 @@ export compute_hessian_density!, eval_asymptotic!, apply_asymptotic!
 export compute_gradient!, compute_hessian!
 export upward_pass!, downward_pass!
 export build_local_tables
+export apply_local!
 
 end
