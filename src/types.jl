@@ -67,6 +67,7 @@ struct PlaneWaveData{T<:Real}
     tab_coefs2pw::Vector{Matrix{ComplexF64}}  # coeffs-to-PW per level
     tab_pw2pot::Vector{Matrix{ComplexF64}}    # PW-to-potential per level
     ifpwexp::Vector{Bool}          # which boxes need PW processing
+    eps::T                         # requested precision used for PW setup
 end
 
 # Solver output

@@ -27,6 +27,8 @@ end
 include("derivatives.jl")
 include("interaction_lists.jl")
 include("local_tables.jl")
+include("planewave.jl")
+include("boxfgt.jl")
 include("local.jl")
 
 export LaplaceKernel, YukawaKernel, SqrtLaplaceKernel
@@ -40,6 +42,10 @@ export compute_hessian_density!, eval_asymptotic!, apply_asymptotic!
 export compute_gradient!, compute_hessian!
 export upward_pass!, downward_pass!
 export build_local_tables
+export get_pw_term_count, get_pw_nodes, build_pw_conversion_tables
+export build_pw_shift_matrices, kernel_fourier_transform, setup_planewave_data
+export DeltaGroups, get_delta_cutoff_level, group_deltas_by_level
+export boxfgt!, handle_fat_gaussian!
 export apply_local!
 
 end
