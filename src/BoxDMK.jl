@@ -7,6 +7,7 @@ include("types.jl")
 include("utils.jl")
 include("sog.jl")
 include("basis.jl")
+include("tensor.jl")
 
 function build_tree end
 function bdmk end
