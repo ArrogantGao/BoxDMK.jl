@@ -17,4 +17,5 @@ using LinearAlgebra
     include("test_boxfgt.jl")
     include("test_derivatives.jl")
     include("test_solver.jl")
+    include("test_cross_validation.jl")
 end
