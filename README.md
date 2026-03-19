@@ -5,7 +5,7 @@
 [![Build Status](https://github.com/ArrogantGao/BoxDMK.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/ArrogantGao/BoxDMK.jl/actions/workflows/CI.yml?query=branch%3Amain)
 [![Coverage](https://codecov.io/gh/ArrogantGao/BoxDMK.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/ArrogantGao/BoxDMK.jl)
 
-A Julia implementation of the **Box-based Data-driven kernel-independent Method of Kernels (BoxDMK)** for fast evaluation of volume potentials on adaptive hierarchical box trees in 3D.
+A Julia implementation of the **BoxDMK** for fast evaluation of volume potentials on adaptive hierarchical box trees in 3D.
 
 Given a source density $f$ defined on a domain $\Omega$ and a kernel $K$ (e.g., Laplace, Yukawa), BoxDMK rapidly computes the volume potential:
 
