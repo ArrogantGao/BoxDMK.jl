@@ -18,4 +18,5 @@ using LinearAlgebra
     include("test_derivatives.jl")
     include("test_solver.jl")
     include("test_cross_validation.jl")
+    include("test_fortran_wrapper.jl")
 end

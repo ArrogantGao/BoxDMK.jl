@@ -94,6 +94,7 @@ function build_pw_conversion_tables(
 end
 
 pw_expansion_size(npw::Integer, ndim::Integer) = Int(npw)^Int(ndim)
+pw_expansion_size_half(npw::Integer, ndim::Integer) = ((Int(npw) + 1) ÷ 2) * Int(npw)^(Int(ndim) - 1)
 
 function kernel_fourier_transform(
     deltas::AbstractVector,
@@ -117,9 +118,27 @@ function kernel_fourier_transform(
         end
     end
 
-    kernel_ft = Vector{Float64}(undef, pw_expansion_size(npw, ndim_int))
+    npw2 = (npw + 1) ÷ 2
+    kernel_ft = Vector{Float64}(undef, pw_expansion_size_half(npw, ndim_int))
     index = 1
-    for multi_index in Iterators.product(ntuple(_ -> 1:npw, ndim_int)...)
+    if ndim_int == 3
+        @inbounds for i1 in 1:npw2
+            for i2 in 1:npw
+                for i3 in 1:npw
+                    total = 0.0
+                    for k in eachindex(deltas)
+                        total = muladd(Float64(weights[k]), ww[i1, k] * ww[i2, k] * ww[i3, k], total)
+                    end
+                    kernel_ft[index] = total
+                    index += 1
+                end
+            end
+        end
+        return kernel_ft
+    end
+
+    index_ranges = (1:npw2, ntuple(_ -> 1:npw, ndim_int - 1)...)
+    for multi_index in Iterators.product(index_ranges...)
         total = 0.0
         for k in eachindex(deltas)
             contribution = Float64(weights[k])
@@ -164,6 +183,60 @@ function _translation_index(offset::NTuple{N, Int}, nmax::Int) where {N}
     return index
 end
 
+function build_pw_1d_phase_table(pw_nodes::AbstractVector, boxdim::Real; nmax::Integer = 3)
+    npw = length(pw_nodes)
+    nmax_int = Int(nmax)
+    nmax_int >= 0 || throw(ArgumentError("nmax must be nonnegative"))
+    boxdim_value = Float64(boxdim)
+    center = nmax_int + 1
+    ww = Matrix{ComplexF64}(undef, npw, 2 * nmax_int + 1)
+
+    for j in 1:npw
+        base = exp(im * Float64(pw_nodes[j]) * boxdim_value)
+        ww[j, center] = 1.0 + 0im
+        ztmp = base
+        for k in 1:nmax_int
+            ww[j, center + k] = ztmp
+            ww[j, center - k] = conj(ztmp)
+            ztmp *= base
+        end
+    end
+
+    return ww
+end
+
+function compute_shift_vector!(shift_vec::AbstractVector{ComplexF64}, ww::Matrix{ComplexF64}, offset::NTuple{N, Int}, npw::Int, nmax::Int) where {N}
+    length(shift_vec) == pw_expansion_size_half(npw, N) ||
+        throw(DimensionMismatch("shift_vec must have length $(pw_expansion_size_half(npw, N))"))
+    center = nmax + 1
+    npw2 = (npw + 1) ÷ 2
+    idx = 1
+    if N == 3
+        @inbounds for i1 in 1:npw2
+            w1 = ww[i1, offset[1] + center]
+            for i2 in 1:npw
+                w12 = w1 * ww[i2, offset[2] + center]
+                for i3 in 1:npw
+                    shift_vec[idx] = w12 * ww[i3, offset[3] + center]
+                    idx += 1
+                end
+            end
+        end
+    else
+        index_ranges = (1:npw2, ntuple(_ -> 1:npw, N - 1)...)
+        for multi_index in Iterators.product(index_ranges...)
+            value = 1.0 + 0im
+            for dim in 1:N
+                value *= ww[multi_index[dim], offset[dim] + center]
+            end
+            shift_vec[idx] = value
+            idx += 1
+        end
+    end
+    return shift_vec
+end
+
+# Keep old API for tests that use build_pw_shift_matrices directly
 function build_pw_shift_matrices(pw_nodes::AbstractVector, boxdim::Real, ndim::Integer; nmax::Integer = 3)
     npw = length(pw_nodes)
     ndim_int = Int(ndim)
@@ -171,20 +244,15 @@ function build_pw_shift_matrices(pw_nodes::AbstractVector, boxdim::Real, ndim::I
     ndim_int > 0 || throw(ArgumentError("ndim must be positive"))
     nmax_int >= 0 || throw(ArgumentError("nmax must be nonnegative"))
 
-    nexp = pw_expansion_size(npw, ndim_int)
+    ww = build_pw_1d_phase_table(pw_nodes, boxdim; nmax = nmax_int)
+    nexp = pw_expansion_size_half(npw, ndim_int)
     ntranslations = (2 * nmax_int + 1)^ndim_int
     shift = Matrix{ComplexF64}(undef, nexp, ntranslations)
-    frequencies = vec(collect(Iterators.product(ntuple(_ -> 1:npw, ndim_int)...)))
 
+    column = 1
     for offset in Iterators.product(ntuple(_ -> (-nmax_int):nmax_int, ndim_int)...)
-        column = _translation_index(offset, nmax_int)
-        for (row, multi_index) in pairs(frequencies)
-            phase = 0.0
-            for dim in 1:ndim_int
-                phase += Float64(pw_nodes[multi_index[dim]]) * offset[dim]
-            end
-            shift[row, column] = exp(im * Float64(boxdim) * phase)
-        end
+        compute_shift_vector!(@view(shift[:, column]), ww, offset, npw, nmax_int)
+        column += 1
     end
 
     return shift
@@ -201,16 +269,25 @@ function setup_planewave_data(
     eps::Real;
     nd::Integer = 1,
     ifpwexp = trues(nboxes(tree)),
-    nmax::Integer = 3,
+    nmax::Integer = 1,
+    needed_levels::Union{Nothing, AbstractSet{<:Integer}} = nothing,
 )
     nd_int = Int(nd)
+    nmax_int = Int(nmax)
     nd_int > 0 || throw(ArgumentError("nd must be positive"))
     length(ifpwexp) == nboxes(tree) || throw(DimensionMismatch("ifpwexp must have length $(nboxes(tree))"))
+    needed_levels_int = needed_levels === nothing ? nothing : Set(Int(level) for level in needed_levels)
+
+    if needed_levels_int !== nothing
+        for level in needed_levels_int
+            0 <= level <= tree.nlevels || throw(ArgumentError("needed_levels contains invalid level $level"))
+        end
+    end
 
     npw = Vector{Int}(undef, tree.nlevels + 1)
     pw_nodes = Vector{Vector{Float64}}(undef, tree.nlevels + 1)
     pw_weights = Vector{Vector{Float64}}(undef, tree.nlevels + 1)
-    wpwshift = Vector{Matrix{ComplexF64}}(undef, tree.nlevels + 1)
+    ww_1d = Vector{Matrix{ComplexF64}}(undef, tree.nlevels + 1)
     tab_coefs2pw = Vector{Matrix{ComplexF64}}(undef, tree.nlevels + 1)
     tab_pw2pot = Vector{Matrix{ComplexF64}}(undef, tree.nlevels + 1)
 
@@ -219,13 +296,19 @@ function setup_planewave_data(
         boxdim = Float64(tree.boxsize[level_index])
         npw[level_index] = get_pw_term_count(eps, level)
         pw_nodes[level_index], pw_weights[level_index] = get_pw_nodes(eps, level, boxdim)
-        tab_coefs2pw[level_index], tab_pw2pot[level_index] = build_pw_conversion_tables(
-            LegendreBasis(),
-            proxy.porder,
-            pw_nodes[level_index],
-            boxdim,
-        )
-        wpwshift[level_index] = build_pw_shift_matrices(pw_nodes[level_index], boxdim, tree.ndim; nmax = nmax)
+        if needed_levels_int === nothing || in(level, needed_levels_int)
+            tab_coefs2pw[level_index], tab_pw2pot[level_index] = build_pw_conversion_tables(
+                LegendreBasis(),
+                proxy.porder,
+                pw_nodes[level_index],
+                boxdim,
+            )
+            ww_1d[level_index] = build_pw_1d_phase_table(pw_nodes[level_index], boxdim; nmax = nmax_int)
+        else
+            ww_1d[level_index] = Matrix{ComplexF64}(undef, 0, 0)
+            tab_coefs2pw[level_index] = Matrix{ComplexF64}(undef, 0, 0)
+            tab_pw2pot[level_index] = Matrix{ComplexF64}(undef, 0, 0)
+        end
     end
 
     iaddr = zeros(Int, 2, nboxes(tree))
@@ -237,7 +320,7 @@ function setup_planewave_data(
             continue
         end
 
-        nexp = pw_expansion_size(npw[tree.level[ibox] + 1], tree.ndim)
+        nexp = pw_expansion_size_half(npw[tree.level[ibox] + 1], tree.ndim)
         len = nexp * nd_int
         iaddr[1, ibox] = total + 1
         total += len
@@ -251,7 +334,8 @@ function setup_planewave_data(
         npw,
         pw_nodes,
         pw_weights,
-        wpwshift,
+        ww_1d,
+        nmax_int,
         tab_coefs2pw,
         tab_pw2pot,
         ifpwexp_vec,

@@ -16,6 +16,10 @@ function upward_pass!(proxy_charges::Array{T,3}, tree::BoxTree, proxy::ProxyData
     ndim = _check_pass_inputs(proxy_charges, tree, proxy, "proxy_charges")
     nd = size(proxy_charges, 2)
     nchildren = size(tree.children, 1)
+    nthreadslots = Threads.maxthreadid()
+    src_boxes = [Matrix{T}(undef, nd, proxy.ncbox) for _ in 1:nthreadslots]
+    works = [Matrix{T}(undef, nd, proxy.ncbox) for _ in 1:nthreadslots]
+    tensor_workspaces = [_tensor_apply_workspace(T, nd, proxy.porder, ndim) for _ in 1:nthreadslots]
 
     for level in (tree.nlevels - 1):-1:0
         level_boxes = boxes_at_level(tree, level)
@@ -24,8 +28,9 @@ function upward_pass!(proxy_charges::Array{T,3}, tree::BoxTree, proxy::ProxyData
             ibox = level_boxes[index]
             isleaf(tree, ibox) && continue
 
-            src_box = Matrix{T}(undef, nd, proxy.ncbox)
-            work = Matrix{T}(undef, nd, proxy.ncbox)
+            tid = Threads.threadid()
+            src_box = src_boxes[tid]
+            work = works[tid]
             parent_box = @view proxy_charges[:, :, ibox]
 
             for ic in 1:nchildren
@@ -33,7 +38,7 @@ function upward_pass!(proxy_charges::Array{T,3}, tree::BoxTree, proxy::ProxyData
                 ichild == 0 && continue
 
                 @views src_box .= transpose(proxy_charges[:, :, ichild])
-                tensor_product_apply!(work, _child_transfer_mats(proxy.c2p_transmat, ndim, ic), src_box, proxy.porder, ndim, nd)
+                tensor_product_apply!(work, _child_transfer_mats(proxy.c2p_transmat, ndim, ic), src_box, proxy.porder, ndim, nd, tensor_workspaces[tid])
                 parent_box .+= transpose(work)
             end
         end
@@ -46,6 +51,10 @@ function downward_pass!(proxy_pot::Array{T,3}, tree::BoxTree, proxy::ProxyData) 
     ndim = _check_pass_inputs(proxy_pot, tree, proxy, "proxy_pot")
     nd = size(proxy_pot, 2)
     nchildren = size(tree.children, 1)
+    nthreadslots = Threads.maxthreadid()
+    src_boxes = [Matrix{T}(undef, nd, proxy.ncbox) for _ in 1:nthreadslots]
+    works = [Matrix{T}(undef, nd, proxy.ncbox) for _ in 1:nthreadslots]
+    tensor_workspaces = [_tensor_apply_workspace(T, nd, proxy.porder, ndim) for _ in 1:nthreadslots]
 
     for level in 1:tree.nlevels
         parent_boxes = boxes_at_level(tree, level - 1)
@@ -54,8 +63,9 @@ function downward_pass!(proxy_pot::Array{T,3}, tree::BoxTree, proxy::ProxyData) 
             ibox = parent_boxes[index]
             isleaf(tree, ibox) && continue
 
-            src_box = Matrix{T}(undef, nd, proxy.ncbox)
-            work = Matrix{T}(undef, nd, proxy.ncbox)
+            tid = Threads.threadid()
+            src_box = src_boxes[tid]
+            work = works[tid]
 
             @views src_box .= transpose(proxy_pot[:, :, ibox])
 
@@ -63,7 +73,7 @@ function downward_pass!(proxy_pot::Array{T,3}, tree::BoxTree, proxy::ProxyData) 
                 ichild = tree.children[ic, ibox]
                 ichild == 0 && continue
 
-                tensor_product_apply!(work, _child_transfer_mats(proxy.p2c_transmat, ndim, ic), src_box, proxy.porder, ndim, nd)
+                tensor_product_apply!(work, _child_transfer_mats(proxy.p2c_transmat, ndim, ic), src_box, proxy.porder, ndim, nd, tensor_workspaces[tid])
                 @views proxy_pot[:, :, ichild] .+= transpose(work)
             end
         end

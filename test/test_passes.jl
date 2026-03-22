@@ -110,4 +110,17 @@ end
             @test proxy_pot[:, :, ibox] ≈ expected_children[child]
         end
     end
+
+    @testset "Tensor product workspace matches default path" begin
+        data = reshape(collect(1.0:(ncbox * nd)), nd, ncbox)
+        mats = ntuple(d -> view(proxy.p2c_transmat, :, :, d, 1), tree.ndim)
+        out = similar(data)
+        out_ws = similar(data)
+        workspace = BoxDMK._tensor_apply_workspace(Float64, nd, proxy.porder, tree.ndim)
+
+        BoxDMK.tensor_product_apply!(out, mats, data, proxy.porder, tree.ndim, nd)
+        BoxDMK.tensor_product_apply!(out_ws, mats, data, proxy.porder, tree.ndim, nd, workspace)
+
+        @test out_ws ≈ out
+    end
 end

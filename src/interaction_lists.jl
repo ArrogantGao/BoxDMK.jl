@@ -54,37 +54,29 @@ function _build_list1_for_leaf(tree::BoxTree, ibox::Int)
     return near
 end
 
-function _build_listpw_for_box(tree::BoxTree, ibox::Int, colleague_sets::Vector{Set{Int}})
-    parent = tree.parent[ibox]
-    parent == 0 && return Int[]
-
-    far = Int[]
-    seen = falses(nboxes(tree))
-
-    for pbox in tree.colleagues[parent]
-        for jbox in @view tree.children[:, pbox]
-            jbox == 0 && continue
-            jbox == ibox && continue
-            tree.level[jbox] == tree.level[ibox] || continue
-            jbox in colleague_sets[ibox] && continue
-            _push_unique!(far, seen, jbox)
-        end
+function _build_listpw_for_box(tree::BoxTree, ibox::Int)
+    # Fortran-style colleague-based PW list:
+    # colleagues (excluding self) where at least one box has children
+    pw = Int[]
+    for jbox in tree.colleagues[ibox]
+        jbox == ibox && continue
+        tree.level[jbox] == tree.level[ibox] || continue
+        (!isleaf(tree, ibox) || !isleaf(tree, jbox)) || continue
+        push!(pw, jbox)
     end
-
-    return far
+    return pw
 end
 
 function build_interaction_lists(tree::BoxTree)
     nboxes_total = nboxes(tree)
     list1 = [Int[] for _ in 1:nboxes_total]
-    colleague_sets = [Set(colleagues) for colleagues in tree.colleagues]
 
     for ibox in 1:nboxes_total
         isleaf(tree, ibox) || continue
         list1[ibox] = _build_list1_for_leaf(tree, ibox)
     end
 
-    listpw = [_build_listpw_for_box(tree, ibox, colleague_sets) for ibox in 1:nboxes_total]
+    listpw = [_build_listpw_for_box(tree, ibox) for ibox in 1:nboxes_total]
 
     return InteractionLists(list1, listpw)
 end

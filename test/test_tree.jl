@@ -87,9 +87,9 @@ end
 
         for jbox in lists.listpw[ibox]
             @test tree.level[ibox] == tree.level[jbox]
-            @test !(jbox in tree.colleagues[ibox])
-            @test tree.parent[ibox] > 0
-            @test tree.parent[jbox] in tree.colleagues[tree.parent[ibox]]
+            @test jbox != ibox
+            @test jbox in tree.colleagues[ibox]
+            @test !BoxDMK.isleaf(tree, ibox) || !BoxDMK.isleaf(tree, jbox)
         end
     end
 end

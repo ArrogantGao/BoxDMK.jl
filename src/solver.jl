@@ -24,6 +24,31 @@ function _apply_taylor_correction!(pot, tree::BoxTree, fvals, flvals, fl2vals, c
     return pot
 end
 
+function _group_fat_gaussians_by_level(tree::BoxTree, fat_terms, eps::Float64)
+    fat_map = Dict{Int, Tuple{Vector{Float64}, Vector{Float64}}}()
+
+    for (delta_raw, weight_raw) in fat_terms
+        delta = Float64(delta_raw)
+        weight = Float64(weight_raw)
+        level = get_delta_cutoff_level(tree, delta, eps)
+        level < 0 || throw(ArgumentError("delta=$delta is not a fat Gaussian for eps=$eps"))
+
+        deltas, weights = get!(fat_map, level) do
+            (Float64[], Float64[])
+        end
+        push!(deltas, delta)
+        push!(weights, weight)
+    end
+
+    grouped = Tuple{Int, Vector{Float64}, Vector{Float64}}[]
+    for level in sort(collect(keys(fat_map)))
+        deltas, weights = fat_map[level]
+        push!(grouped, (level, deltas, weights))
+    end
+
+    return grouped
+end
+
 function _solver_local_lists(tree::BoxTree, lists::InteractionLists)
     filtered = Vector{Vector{Int}}(undef, nboxes(tree))
 
@@ -40,6 +65,25 @@ function _solver_local_lists(tree::BoxTree, lists::InteractionLists)
     end
 
     return InteractionLists(filtered, lists.listpw)
+end
+
+function _setup_normal_pw_data(tree::BoxTree, proxy::ProxyData, eps::Real; nd::Integer = 1, delta_groups::DeltaGroups)
+    isempty(delta_groups.normal) && return nothing
+
+    needed_levels = Set{Int}()
+    ifpwexp = falses(nboxes(tree))
+
+    for (level, _, _) in delta_groups.normal
+        push!(needed_levels, level)
+    end
+
+    for ibox in 1:nboxes(tree)
+        if tree.level[ibox] in needed_levels
+            ifpwexp[ibox] = true
+        end
+    end
+
+    return setup_planewave_data(tree, proxy, eps; nd = nd, needed_levels = needed_levels, ifpwexp = ifpwexp)
 end
 
 function _normalize_targets(targets, tree::BoxTree)
@@ -176,8 +220,6 @@ function bdmk(
         Float64.(tree.boxsize),
         tree.nlevels,
     )
-    pw_data = setup_planewave_data(tree, proxy, eps_value; nd = nd)
-
     pot = zeros(result_type, nd, np, nboxes(tree))
 
     flvals = zeros(result_type, size(fvals))
@@ -191,12 +233,19 @@ function bdmk(
     upward_pass!(proxy_charges, tree, proxy)
 
     proxy_pot = zeros(result_type, proxy.ncbox, nd, nboxes(tree))
-    for (_, deltas, weights) in delta_groups.normal
-        boxfgt!(proxy_pot, tree, proxy_charges, deltas, weights, pw_data, lists)
+    pw_data = _setup_normal_pw_data(tree, proxy, eps_value; nd = nd, delta_groups = delta_groups)
+    if pw_data !== nothing
+        for (_, deltas, weights) in delta_groups.normal
+            boxfgt!(proxy_pot, tree, proxy_charges, deltas, weights, pw_data, lists)
+        end
     end
 
-    for (delta, weight) in delta_groups.fat
-        handle_fat_gaussian!(proxy_pot, tree, proxy_charges, delta, weight, pw_data)
+    fat_tables_cache = Dict{Int, Any}()
+    for (level, deltas, weights) in _group_fat_gaussians_by_level(tree, delta_groups.fat, eps_value)
+        tables = get!(fat_tables_cache, level) do
+            build_fat_gaussian_tables(tree, proxy, eps_value, level)
+        end
+        handle_fat_gaussian!(proxy_pot, tree, proxy_charges, deltas, weights, tables)
     end
 
     downward_pass!(proxy_pot, tree, proxy)

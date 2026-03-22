@@ -63,7 +63,8 @@ struct PlaneWaveData{T<:Real}
     npw::Vector{Int}               # PW term count per level
     pw_nodes::Vector{Vector{T}}    # PW quadrature nodes per level
     pw_weights::Vector{Vector{T}}  # PW quadrature weights per level
-    wpwshift::Vector{Matrix{ComplexF64}}  # PW shift matrices per level
+    ww_1d::Vector{Matrix{ComplexF64}}     # 1D phase tables (npw, 2*nmax+1) per level
+    nmax::Int                              # max translation offset per dimension
     tab_coefs2pw::Vector{Matrix{ComplexF64}}  # coeffs-to-PW per level
     tab_pw2pot::Vector{Matrix{ComplexF64}}    # PW-to-potential per level
     ifpwexp::Vector{Bool}          # which boxes need PW processing

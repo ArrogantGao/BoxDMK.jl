@@ -31,6 +31,7 @@ include("planewave.jl")
 include("boxfgt.jl")
 include("local.jl")
 include("solver.jl")
+include("fortran_wrapper.jl")
 
 export LaplaceKernel, YukawaKernel, SqrtLaplaceKernel
 export LegendreBasis, ChebyshevBasis
@@ -48,5 +49,6 @@ export build_pw_shift_matrices, kernel_fourier_transform, setup_planewave_data
 export DeltaGroups, get_delta_cutoff_level, group_deltas_by_level
 export boxfgt!, handle_fat_gaussian!
 export apply_local!
+export FortranTreeData, build_tree_fortran, bdmk_fortran
 
 end

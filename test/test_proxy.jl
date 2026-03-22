@@ -47,4 +47,15 @@ using Test
     pot_back2 = zeros(nd, norder^ndim)
     BoxDMK.proxy_to_potential!(pot_back2, charge2, proxy_legendre)
     @test norm(pot_back2 - fvals2) / norm(fvals2) < 0.1
+
+    rect_out = zeros(nd, porder^ndim)
+    rect_out_ws = similar(rect_out)
+    rect_workspace = BoxDMK._rect_tensor_apply_workspace(Float64, nd, norder, porder, ndim)
+
+    BoxDMK._tensor_product_apply_rect!(rect_out, proxy_legendre.den2pc_mat, @view(fvals[:, :, 1]), norder, porder, ndim, nd)
+    BoxDMK._tensor_product_apply_rect!(rect_out_ws, proxy_legendre.den2pc_mat, @view(fvals[:, :, 1]), norder, porder, ndim, nd, rect_workspace)
+    rect_out_3d = similar(rect_out)
+    BoxDMK._tensor_product_apply_rect_3d!(rect_out_3d, proxy_legendre.den2pc_mat, @view(fvals[:, :, 1]), norder, porder, nd, rect_workspace)
+    @test rect_out_ws ≈ rect_out
+    @test rect_out_3d ≈ rect_out
 end

@@ -15,19 +15,106 @@ function _check_tensor_product_inputs(out, mats, vals, n::Int, ndim::Int, nd::In
     return ngrid
 end
 
+_tensor_apply_workspace(::Type{T}, nd::Int, n::Int, ndim::Int) where {T} =
+    _rect_tensor_apply_workspace(T, nd, n, n, ndim)
+
 function _tensor_product_apply_dim!(dest, src, mat, n::Int, ndim::Int, nd::Int, dim::Int)
+    workspace = _tensor_apply_workspace(eltype(dest), nd, n, ndim)
+    return _tensor_product_apply_dim!(dest, src, mat, n, ndim, nd, dim, workspace)
+end
+
+function _tensor_product_apply_dim!(dest, src, mat, n::Int, ndim::Int, nd::Int, dim::Int, workspace)
+    ndim == 3 && return _tensor_product_apply_dim_3d!(dest, src, mat, n, nd, dim, workspace)
+    return _tensor_product_apply_dim!(dest, src, mat, n, ndim, nd, dim, workspace.tmp_perm, workspace.result_2d)
+end
+
+function _tensor_product_apply_dim_3d!(dest, src, mat, n::Int, nd::Int, dim::Int)
+    workspace = _tensor_apply_workspace(eltype(dest), nd, n, 3)
+    return _tensor_product_apply_dim_3d!(dest, src, mat, n, nd, dim, workspace)
+end
+
+function _tensor_product_apply_dim_3d!(dest, src, mat, n::Int, nd::Int, dim::Int, workspace)
+    1 <= dim <= 3 || throw(ArgumentError("3D tensor dimension must be 1, 2, or 3"))
+    size(mat) == (n, n) || throw(DimensionMismatch("matrix must have size ($n, $n)"))
+    size(src) == (nd, n^3) || throw(DimensionMismatch("src must have size ($nd, $(n^3))"))
+    size(dest) == (nd, n^3) || throw(DimensionMismatch("dest must have size ($nd, $(n^3))"))
+
+    _check_rect_tensor_3d_workspace(workspace, n, n)
+
+    packed_src = @view(workspace.packed_src[1:(n^3)])
+    packed_dest = @view(workspace.packed_dest[1:(n^3)])
+    ff = @view(workspace.ff[1:(n^2), 1:n])
+    fft = @view(workspace.fft[1:n, 1:(n * n)])
+    mat_t = transpose(mat)
+
+    for iv in 1:nd
+        copyto!(packed_src, @view(src[iv, :]))
+
+        if dim == 1
+            src_2d = reshape(packed_src, n, n * n)
+            dest_2d = reshape(packed_dest, n, n * n)
+            mul!(dest_2d, mat, src_2d)
+        elseif dim == 2
+            src_3d = reshape(packed_src, n, n, n)
+            ff_3d = reshape(ff, n, n, n)
+            @inbounds for i3 in 1:n, i1 in 1:n, i2 in 1:n
+                ff_3d[i2, i1, i3] = src_3d[i1, i2, i3]
+            end
+
+            mul!(fft, mat, reshape(ff, n, n * n))
+
+            fft_3d = reshape(fft, n, n, n)
+            dest_3d = reshape(packed_dest, n, n, n)
+            @inbounds for i3 in 1:n, i2 in 1:n, i1 in 1:n
+                dest_3d[i1, i2, i3] = fft_3d[i2, i1, i3]
+            end
+        else
+            src_2d = reshape(packed_src, n * n, n)
+            dest_2d = reshape(packed_dest, n * n, n)
+            mul!(dest_2d, src_2d, mat_t)
+        end
+
+        copyto!(@view(dest[iv, :]), packed_dest)
+    end
+
+    return dest
+end
+
+function _tensor_product_apply_dim!(
+    dest,
+    src,
+    mat,
+    n::Int,
+    ndim::Int,
+    nd::Int,
+    dim::Int,
+    tmp_perm::AbstractMatrix,
+    result_2d::AbstractMatrix,
+)
     prefix = n^(dim - 1)
     suffix = n^(ndim - dim)
     mat_t = transpose(mat)
 
     for iv in 1:nd
-        src_tensor = reshape(@view(src[iv, :]), prefix, n, suffix)
-        dest_tensor = reshape(@view(dest[iv, :]), prefix, n, suffix)
-
-        for isuffix in 1:suffix
-            src_block = @view src_tensor[:, :, isuffix]
-            dest_block = @view dest_tensor[:, :, isuffix]
-            mul!(dest_block, src_block, mat_t)
+        if prefix == 1
+            src_flat = reshape(@view(src[iv, :]), n, suffix)
+            dest_flat = reshape(@view(dest[iv, :]), n, suffix)
+            mul!(dest_flat, mat, src_flat)
+        elseif suffix == 1
+            src_2d = reshape(@view(src[iv, :]), prefix, n)
+            dest_2d = reshape(@view(dest[iv, :]), prefix, n)
+            mul!(dest_2d, src_2d, mat_t)
+        else
+            src_3d = reshape(@view(src[iv, :]), prefix, n, suffix)
+            rows = prefix * suffix
+            tmp_2d = @view(tmp_perm[1:rows, 1:n])
+            tmp_3d = reshape(tmp_2d, prefix, suffix, n)
+            permutedims!(tmp_3d, src_3d, (1, 3, 2))
+            result_2d_view = @view(result_2d[1:rows, 1:n])
+            mul!(result_2d_view, tmp_2d, mat_t)
+            result_3d = reshape(result_2d_view, prefix, suffix, n)
+            dest_3d = reshape(@view(dest[iv, :]), prefix, n, suffix)
+            permutedims!(dest_3d, result_3d, (1, 3, 2))
         end
     end
 
@@ -35,23 +122,42 @@ function _tensor_product_apply_dim!(dest, src, mat, n::Int, ndim::Int, nd::Int, 
 end
 
 function tensor_product_apply!(out, mats::Tuple, vals, n, ndim, nd)
+    workspace = _tensor_apply_workspace(eltype(out), Int(nd), Int(n), Int(ndim))
+    return tensor_product_apply!(out, mats, vals, n, ndim, nd, workspace)
+end
+
+function tensor_product_apply!(out, mats::Tuple, vals, n, ndim, nd, workspace)
     n_int = Int(n)
     ndim_int = Int(ndim)
     nd_int = Int(nd)
     _check_tensor_product_inputs(out, mats, vals, n_int, ndim_int, nd_int)
 
-    workspace = similar(out)
+    ngrid = n_int^ndim_int
+    middle_rows = _rect_tensor_middle_rows(n_int, n_int, ndim_int)
+    size(workspace.scratch_a, 1) == nd_int || throw(DimensionMismatch("workspace scratch_a must have $nd_int rows"))
+    size(workspace.scratch_b, 1) == nd_int || throw(DimensionMismatch("workspace scratch_b must have $nd_int rows"))
+    size(workspace.scratch_a, 2) >= ngrid || throw(DimensionMismatch("workspace scratch_a must have at least $ngrid columns"))
+    size(workspace.scratch_b, 2) >= ngrid || throw(DimensionMismatch("workspace scratch_b must have at least $ngrid columns"))
+    size(workspace.tmp_perm, 1) >= middle_rows || throw(DimensionMismatch("workspace tmp_perm must have at least $middle_rows rows"))
+    size(workspace.tmp_perm, 2) >= n_int || throw(DimensionMismatch("workspace tmp_perm must have at least $n_int columns"))
+    size(workspace.result_2d, 1) >= middle_rows || throw(DimensionMismatch("workspace result_2d must have at least $middle_rows rows"))
+    size(workspace.result_2d, 2) >= n_int || throw(DimensionMismatch("workspace result_2d must have at least $n_int columns"))
+
     src = vals
+    src_slot = 0
 
     for dim in 1:ndim_int
-        dest = if dim == ndim_int
-            src === out ? workspace : out
+        dest, dest_slot = if dim == ndim_int && src !== out
+            (out, 3)
+        elseif src_slot == 1
+            (@view(workspace.scratch_b[:, 1:ngrid]), 2)
         else
-            src === workspace ? out : workspace
+            (@view(workspace.scratch_a[:, 1:ngrid]), 1)
         end
 
-        _tensor_product_apply_dim!(dest, src, mats[dim], n_int, ndim_int, nd_int, dim)
+        _tensor_product_apply_dim!(dest, src, mats[dim], n_int, ndim_int, nd_int, dim, workspace)
         src = dest
+        src_slot = dest_slot
     end
 
     src === out || copyto!(out, src)
