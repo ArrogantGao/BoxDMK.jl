@@ -222,6 +222,13 @@ function build_proxy_data(basis::AbstractBasis, norder::Int, porder::Int, ndim::
     )
 end
 
+function _use_fortran_proxy_hotpath(dest, src, ndim::Int)
+    return _FORTRAN_HOTPATHS_AVAILABLE[] &&
+           ndim == 3 &&
+           dest isa StridedArray{Float64,3} &&
+           src isa StridedArray{Float64,3}
+end
+
 function _density_to_proxy_impl!(charge, fvals, proxy::ProxyData)
     ndim = _infer_proxy_ndim(proxy)
     norder = size(proxy.den2pc_mat, 2)
@@ -231,6 +238,21 @@ function _density_to_proxy_impl!(charge, fvals, proxy::ProxyData)
 
     size(fvals, 2) == npbox_val || throw(DimensionMismatch("fvals must have size ($nd, $npbox_val, nboxes)"))
     size(charge) == (proxy.ncbox, nd, nboxes) || throw(DimensionMismatch("charge must have size ($(proxy.ncbox), $nd, $nboxes)"))
+
+    if _use_fortran_proxy_hotpath(charge, fvals, ndim)
+        for ibox in 1:nboxes
+            _f_density2proxycharge!(
+                @view(charge[:, :, ibox]),
+                @view(fvals[:, :, ibox]),
+                proxy.den2pc_mat,
+                ndim,
+                nd,
+                norder,
+                proxy.porder,
+            )
+        end
+        return charge
+    end
 
     work = Matrix{eltype(charge)}(undef, nd, proxy.ncbox)
     tensor_workspace = _rect_tensor_apply_workspace(eltype(charge), nd, norder, proxy.porder, ndim)
@@ -265,6 +287,26 @@ function _proxy_to_potential_impl!(pot, proxy_pot, proxy::ProxyData)
 
     size(pot, 2) == npbox_val || throw(DimensionMismatch("pot must have size ($nd, $npbox_val, nboxes)"))
     size(proxy_pot) == (proxy.ncbox, nd, nboxes) || throw(DimensionMismatch("proxy_pot must have size ($(proxy.ncbox), $nd, $nboxes)"))
+
+    if _use_fortran_proxy_hotpath(pot, proxy_pot, ndim)
+        work = Matrix{Float64}(undef, nd, npbox_val)
+
+        for ibox in 1:nboxes
+            fill!(work, 0.0)
+            _f_proxypot2pot!(
+                work,
+                @view(proxy_pot[:, :, ibox]),
+                proxy.poteval_mat,
+                ndim,
+                nd,
+                proxy.porder,
+                norder,
+            )
+            @views pot[:, :, ibox] .= work
+        end
+
+        return pot
+    end
 
     src_box = Matrix{eltype(pot)}(undef, nd, proxy.ncbox)
     tensor_workspace = _rect_tensor_apply_workspace(eltype(pot), nd, proxy.porder, norder, ndim)

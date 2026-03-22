@@ -36,6 +36,30 @@ function _two_child_tree()
     )
 end
 
+function _two_child_tree_3d()
+    centers = [
+        0.5 0.25 0.75
+        0.5 0.25 0.75
+        0.5 0.25 0.75
+    ]
+    children = zeros(Int, 8, 3)
+    children[1, 1] = 2
+    children[8, 1] = 3
+
+    return BoxDMK.BoxTree(
+        3,
+        1,
+        centers,
+        [1.0, 0.5],
+        [0, 1, 1],
+        children,
+        [[1], [2, 3], [2, 3]],
+        [0, 1, 1],
+        LegendreBasis(),
+        2,
+    )
+end
+
 function _simple_pw_data(tree::BoxDMK.BoxTree; eps::Float64 = 1e-6)
     rmlexp = zeros(ComplexF64, 4)
     iaddr = zeros(Int, 2, BoxDMK.nboxes(tree))
@@ -123,6 +147,47 @@ function _half_linear_indices(npw::Int, ndim::Int)
     end
 
     return indices
+end
+
+function _explicit_proxycharge_to_pw_3d(charges, tab_coefs2pw, porder::Int, npw::Int, nd::Int)
+    npw_half = (npw + 1) ÷ 2
+    coefs = reshape(charges, porder, porder, porder, nd)
+    pwexp = Array{ComplexF64}(undef, npw, npw, npw_half, nd)
+
+    @inbounds for id in 1:nd, k3 in 1:npw_half, k2 in 1:npw, k1 in 1:npw
+        total = 0.0 + 0.0im
+        for m3 in 1:porder, m2 in 1:porder, m1 in 1:porder
+            total += coefs[m1, m2, m3, id] *
+                     tab_coefs2pw[k1, m1] *
+                     tab_coefs2pw[k2, m2] *
+                     tab_coefs2pw[k3, m3]
+        end
+        pwexp[k1, k2, k3, id] = total
+    end
+
+    return reshape(pwexp, :, nd)
+end
+
+function _explicit_pw2proxypot_3d!(dest, pwexp, tab_pw2coefs, porder::Int, npw::Int, nd::Int)
+    npw_half = (npw + 1) ÷ 2
+    npw_sym = npw ÷ 2
+    pw_tensor = reshape(pwexp, npw, npw, npw_half, nd)
+    coefs = reshape(dest, porder, porder, porder, nd)
+
+    @inbounds for id in 1:nd, k3 in 1:porder, k2 in 1:porder, k1 in 1:porder
+        total = 0.0 + 0.0im
+        for m3 in 1:npw_half, m2 in 1:npw, m1 in 1:npw
+            weight = m3 > npw_sym ? 0.5 : 1.0
+            total += weight *
+                     tab_pw2coefs[m1, k1] *
+                     tab_pw2coefs[m2, k2] *
+                     tab_pw2coefs[m3, k3] *
+                     pw_tensor[m1, m2, m3, id]
+        end
+        coefs[k1, k2, k3, id] += 2 * real(total)
+    end
+
+    return dest
 end
 
 @testset "Delta Classification" begin
@@ -260,4 +325,104 @@ end
         work_workspace,
     )
     @test proxy_pot == fill(3.0, nproxy, nd) .+ real.(expected_full)
+end
+
+@testset "Fortran PW Hotpaths" begin
+    @test isdefined(BoxDMK, :_LIBBOXDMK_PATH)
+    @test isdefined(BoxDMK, :_FORTRAN_HOTPATHS_AVAILABLE)
+
+    if isdefined(BoxDMK, :_LIBBOXDMK_PATH) && isdefined(BoxDMK, :_FORTRAN_HOTPATHS_AVAILABLE)
+        @test BoxDMK._FORTRAN_HOTPATHS_AVAILABLE[] == isfile(BoxDMK._LIBBOXDMK_PATH)
+
+        if BoxDMK._FORTRAN_HOTPATHS_AVAILABLE[]
+            porder = 2
+            npw = 3
+            nd = 2
+            nproxy = porder^3
+            nexp_half = BoxDMK.pw_expansion_size_half(npw, 3)
+            charges = reshape(collect(1.0:(nproxy * nd)), nproxy, nd)
+            tab_coefs2pw, _ = BoxDMK.build_pw_conversion_tables(LegendreBasis(), porder, npw, 1.0)
+            tab_pw2coefs = conj.(tab_coefs2pw)
+
+            expected_mp = _explicit_proxycharge_to_pw_3d(charges, tab_coefs2pw, porder, npw, nd)
+            actual_mp = Matrix{ComplexF64}(undef, nexp_half, nd)
+            BoxDMK._f_proxycharge2pw_3d!(actual_mp, charges, tab_coefs2pw, nd, porder, npw)
+            @test actual_mp ≈ expected_mp atol = 1e-12 rtol = 1e-12
+
+            shift_vec = Vector{ComplexF64}(undef, nexp_half)
+            ww = BoxDMK.build_pw_1d_phase_table([-1.0, 0.0, 1.0], 1.0; nmax = 1)
+            BoxDMK.compute_shift_vector!(shift_vec, ww, (1, 0, -1), npw, 1)
+
+            expected_loc = copy(actual_mp)
+            expected_loc .+= actual_mp .* shift_vec
+            actual_loc = copy(actual_mp)
+            BoxDMK._f_shiftpw!(actual_loc, actual_mp, shift_vec, nd, nexp_half)
+            @test actual_loc ≈ expected_loc atol = 1e-12 rtol = 1e-12
+
+            kernel_ft = collect(range(0.5, step = 0.25, length = nexp_half))
+            expected_scaled = actual_loc .* kernel_ft
+            actual_scaled = copy(actual_loc)
+            BoxDMK._f_multiply_kernelft!(actual_scaled, kernel_ft, nd, nexp_half)
+            @test actual_scaled ≈ expected_scaled atol = 1e-12 rtol = 1e-12
+
+            expected_proxy = fill(3.0, nproxy, nd)
+            _explicit_pw2proxypot_3d!(expected_proxy, actual_scaled, tab_pw2coefs, porder, npw, nd)
+            actual_proxy = fill(3.0, nproxy, nd)
+            BoxDMK._f_pw2proxypot_3d!(actual_proxy, actual_scaled, tab_pw2coefs, nd, porder, npw)
+            @test actual_proxy ≈ expected_proxy atol = 1e-12 rtol = 1e-12
+        end
+    end
+end
+
+@testset "Box FGT 3D Matches Fortran PW Formulas" begin
+    tree = _two_child_tree_3d()
+    proxy = BoxDMK.build_proxy_data(LegendreBasis(), tree.norder, 2, tree.ndim)
+    pw_data = BoxDMK.setup_planewave_data(tree, proxy, 1e-2; nd = 1, ifpwexp = [false, true, true], nmax = 1)
+    lists = BoxDMK.InteractionLists([Int[] for _ in 1:3], [Int[], [3], [2]])
+
+    proxy_charges = zeros(Float64, proxy.ncbox, 1, 3)
+    proxy_charges[:, 1, 2] .= 1:proxy.ncbox
+    proxy_charges[:, 1, 3] .= 10 .* (1:proxy.ncbox)
+
+    proxy_pot = zeros(Float64, proxy.ncbox, 1, 3)
+    deltas = [0.01, 0.016]
+    weights = [2.0, -1.0]
+
+    BoxDMK.boxfgt!(proxy_pot, tree, proxy_charges, deltas, weights, pw_data, lists)
+
+    level = BoxDMK.get_delta_cutoff_level(tree, deltas[1], pw_data.eps)
+    npw = pw_data.npw[level + 1]
+    porder = proxy.porder
+    nd = 1
+    nexp_half = BoxDMK.pw_expansion_size_half(npw, tree.ndim)
+    tab_coefs2pw = pw_data.tab_coefs2pw[level + 1]
+    tab_pw2coefs = conj.(tab_coefs2pw)
+    kernel_ft = BoxDMK.kernel_fourier_transform(
+        deltas,
+        weights,
+        pw_data.pw_nodes[level + 1],
+        pw_data.pw_weights[level + 1],
+        tree.ndim,
+    )
+    ww = pw_data.ww_1d[level + 1]
+
+    expected = zeros(Float64, proxy.ncbox, 1, 3)
+    multipoles = Dict(
+        2 => _explicit_proxycharge_to_pw_3d(@view(proxy_charges[:, :, 2]), tab_coefs2pw, porder, npw, nd),
+        3 => _explicit_proxycharge_to_pw_3d(@view(proxy_charges[:, :, 3]), tab_coefs2pw, porder, npw, nd),
+    )
+
+    for ibox in (2, 3)
+        loc = copy(multipoles[ibox])
+        shift_vec = Vector{ComplexF64}(undef, nexp_half)
+        for jbox in lists.listpw[ibox]
+            offset = BoxDMK._box_offset(tree, ibox, jbox, level)
+            BoxDMK.compute_shift_vector!(shift_vec, ww, offset, npw, pw_data.nmax)
+            loc .+= multipoles[jbox] .* shift_vec
+        end
+        loc = loc .* kernel_ft
+        _explicit_pw2proxypot_3d!(@view(expected[:, :, ibox]), loc, tab_pw2coefs, porder, npw, nd)
+    end
+
+    @test proxy_pot ≈ expected atol = 1e-11 rtol = 1e-11
 end

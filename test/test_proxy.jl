@@ -58,4 +58,24 @@ using Test
     BoxDMK._tensor_product_apply_rect_3d!(rect_out_3d, proxy_legendre.den2pc_mat, @view(fvals[:, :, 1]), norder, porder, nd, rect_workspace)
     @test rect_out_ws ≈ rect_out
     @test rect_out_3d ≈ rect_out
+
+    if BoxDMK._FORTRAN_HOTPATHS_AVAILABLE[]
+        charge_direct = fill(-1.0, proxy_legendre.ncbox, nd)
+        BoxDMK._f_density2proxycharge!(charge_direct, @view(fvals[:, :, 1]), proxy_legendre.den2pc_mat, ndim, nd, norder, porder)
+        @test charge_direct ≈ transpose(rect_out)
+
+        proxy_pot_box = reshape(collect(range(-2.0, step = 0.125, length = proxy_legendre.ncbox * nd)), proxy_legendre.ncbox, nd)
+        expected_pot_box = zeros(nd, norder^ndim)
+        src_box = Matrix{Float64}(undef, nd, proxy_legendre.ncbox)
+        src_box .= transpose(proxy_pot_box)
+        BoxDMK._tensor_product_apply_rect!(expected_pot_box, proxy_legendre.poteval_mat, src_box, porder, norder, ndim, nd)
+
+        direct_accumulated = fill(3.0, nd, norder^ndim)
+        BoxDMK._f_proxypot2pot!(direct_accumulated, proxy_pot_box, proxy_legendre.poteval_mat, ndim, nd, porder, norder)
+        @test direct_accumulated ≈ fill(3.0, nd, norder^ndim) .+ expected_pot_box
+
+        pot_overwrite = fill(7.0, nd, norder^ndim, 1)
+        BoxDMK.proxy_to_potential!(pot_overwrite, reshape(proxy_pot_box, proxy_legendre.ncbox, nd, 1), proxy_legendre)
+        @test @view(pot_overwrite[:, :, 1]) ≈ expected_pot_box
+    end
 end

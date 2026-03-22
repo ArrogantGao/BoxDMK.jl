@@ -1,0 +1,128 @@
+const _LIBBOXDMK_PATH = normpath("/mnt/home/xgao1/codes/boxdmk/build/libboxdmk.so")
+const _FORTRAN_HOTPATHS_AVAILABLE = Ref(false)
+
+function _init_fortran_hotpaths()
+    _FORTRAN_HOTPATHS_AVAILABLE[] = isfile(_LIBBOXDMK_PATH)
+    return _FORTRAN_HOTPATHS_AVAILABLE[]
+end
+
+function _f_proxycharge2pw_3d!(pwexp, coefs, tab_coefs2pw, nd, porder, npw)
+    nd_ref = Ref{Cint}(Cint(nd))
+    porder_ref = Ref{Cint}(Cint(porder))
+    npw_ref = Ref{Cint}(Cint(npw))
+
+    ccall(
+        (:dmk_proxycharge2pw_3d_, _LIBBOXDMK_PATH),
+        Cvoid,
+        (Ref{Cint}, Ref{Cint}, Ptr{Float64}, Ref{Cint}, Ptr{ComplexF64}, Ptr{ComplexF64}),
+        nd_ref,
+        porder_ref,
+        coefs,
+        npw_ref,
+        tab_coefs2pw,
+        pwexp,
+    )
+
+    return pwexp
+end
+
+function _f_pw2proxypot_3d!(coefs, pwexp, tab_pw2coefs, nd, porder, npw)
+    nd_ref = Ref{Cint}(Cint(nd))
+    porder_ref = Ref{Cint}(Cint(porder))
+    npw_ref = Ref{Cint}(Cint(npw))
+
+    ccall(
+        (:dmk_pw2proxypot_3d_, _LIBBOXDMK_PATH),
+        Cvoid,
+        (Ref{Cint}, Ref{Cint}, Ref{Cint}, Ptr{ComplexF64}, Ptr{ComplexF64}, Ptr{Float64}),
+        nd_ref,
+        porder_ref,
+        npw_ref,
+        pwexp,
+        tab_pw2coefs,
+        coefs,
+    )
+
+    return coefs
+end
+
+function _f_shiftpw!(pwexp2, pwexp1, wshift, nd, nexp)
+    nd_ref = Ref{Cint}(Cint(nd))
+    nexp_ref = Ref{Cint}(Cint(nexp))
+
+    ccall(
+        (:dmk_shiftpw_, _LIBBOXDMK_PATH),
+        Cvoid,
+        (Ref{Cint}, Ref{Cint}, Ptr{ComplexF64}, Ptr{ComplexF64}, Ptr{ComplexF64}),
+        nd_ref,
+        nexp_ref,
+        pwexp1,
+        pwexp2,
+        wshift,
+    )
+
+    return pwexp2
+end
+
+function _f_multiply_kernelft!(pwexp, wpwexp, nd, nexp)
+    nd_ref = Ref{Cint}(Cint(nd))
+    nexp_ref = Ref{Cint}(Cint(nexp))
+
+    ccall(
+        (:dmk_multiply_kernelft_, _LIBBOXDMK_PATH),
+        Cvoid,
+        (Ref{Cint}, Ref{Cint}, Ptr{ComplexF64}, Ptr{Float64}),
+        nd_ref,
+        nexp_ref,
+        pwexp,
+        wpwexp,
+    )
+
+    return pwexp
+end
+
+function _f_density2proxycharge!(fout, fin, umat, ndim, nd, nin, nout)
+    ndim_ref = Ref{Cint}(Cint(ndim))
+    nd_ref = Ref{Cint}(Cint(nd))
+    nin_ref = Ref{Cint}(Cint(nin))
+    nout_ref = Ref{Cint}(Cint(nout))
+    sc_ref = Ref{Float64}(1.0)
+
+    ccall(
+        (:bdmk_density2proxycharge_, _LIBBOXDMK_PATH),
+        Cvoid,
+        (Ref{Cint}, Ref{Cint}, Ref{Cint}, Ptr{Float64}, Ref{Cint}, Ptr{Float64}, Ptr{Float64}, Ref{Float64}),
+        ndim_ref,
+        nd_ref,
+        nin_ref,
+        fin,
+        nout_ref,
+        fout,
+        umat,
+        sc_ref,
+    )
+
+    return fout
+end
+
+function _f_proxypot2pot!(fout, fin, umat, ndim, nd, nin, nout)
+    ndim_ref = Ref{Cint}(Cint(ndim))
+    nd_ref = Ref{Cint}(Cint(nd))
+    nin_ref = Ref{Cint}(Cint(nin))
+    nout_ref = Ref{Cint}(Cint(nout))
+
+    ccall(
+        (:bdmk_proxypot2pot_, _LIBBOXDMK_PATH),
+        Cvoid,
+        (Ref{Cint}, Ref{Cint}, Ref{Cint}, Ptr{Float64}, Ref{Cint}, Ptr{Float64}, Ptr{Float64}),
+        ndim_ref,
+        nd_ref,
+        nin_ref,
+        fin,
+        nout_ref,
+        fout,
+        umat,
+    )
+
+    return fout
+end

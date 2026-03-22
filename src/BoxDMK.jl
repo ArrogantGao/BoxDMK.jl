@@ -31,6 +31,7 @@ include("planewave.jl")
 include("boxfgt.jl")
 include("local.jl")
 include("solver.jl")
+include("fortran_hotpaths.jl")
 include("fortran_wrapper.jl")
 
 export LaplaceKernel, YukawaKernel, SqrtLaplaceKernel

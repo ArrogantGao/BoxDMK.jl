@@ -310,6 +310,8 @@ function boxfgt!(
     ww = pw_data.ww_1d[level + 1]
     nmax = pw_data.nmax
     level_boxes = collect(boxes_at_level(tree, level))
+    use_fortran_hotpaths = tree.ndim == 3 && _FORTRAN_HOTPATHS_AVAILABLE[]
+    tab_pw2coefs_f = use_fortran_hotpaths ? conj.(pw_data.tab_coefs2pw[level + 1]) : nothing
     nthreadslots = Threads.maxthreadid()
     shift_vecs = [Vector{ComplexF64}(undef, nexp_half) for _ in 1:nthreadslots]
     proxy_workspaces = [Matrix{ComplexF64}(undef, nd, porder^tree.ndim) for _ in 1:nthreadslots]
@@ -332,18 +334,24 @@ function boxfgt!(
         loc = _pw_expansion_view(pw_data, 2, ibox, nexp_half, nd)
         fill!(mp, 0)
         fill!(loc, 0)
-        _proxycharge_to_pw!(
-            mp,
-            @view(proxy_charges[:, :, ibox]),
-            pw_data.tab_coefs2pw[level + 1],
-            tree.ndim,
-            porder,
-            npw,
-            nd,
-            proxy_workspaces[tid],
-            pw_workspaces[tid],
-            to_pw_tensor_workspaces[tid],
-        )
+
+        if use_fortran_hotpaths
+            _f_proxycharge2pw_3d!(mp, @view(proxy_charges[:, :, ibox]), pw_data.tab_coefs2pw[level + 1], nd, porder, npw)
+        else
+            _proxycharge_to_pw!(
+                mp,
+                @view(proxy_charges[:, :, ibox]),
+                pw_data.tab_coefs2pw[level + 1],
+                tree.ndim,
+                porder,
+                npw,
+                nd,
+                proxy_workspaces[tid],
+                pw_workspaces[tid],
+                to_pw_tensor_workspaces[tid],
+            )
+        end
+
         loc .= mp
     end
 
@@ -360,22 +368,32 @@ function boxfgt!(
             offset = _box_offset(tree, ibox, jbox, level)
             compute_shift_vector!(shift_vecs[tid], ww, offset, npw, nmax)
             src = _pw_expansion_view(pw_data, 1, jbox, nexp_half, nd)
-            @views loc .+= src .* shift_vecs[tid]
+
+            if use_fortran_hotpaths
+                _f_shiftpw!(loc, src, shift_vecs[tid], nd, nexp_half)
+            else
+                @views loc .+= src .* shift_vecs[tid]
+            end
         end
 
-        @views loc .*= kernel_ft
-        _pw_to_proxy!(
-            @view(proxy_pot[:, :, ibox]),
-            loc,
-            pw_data.tab_pw2pot[level + 1],
-            tree.ndim,
-            porder,
-            npw,
-            nd,
-            pw_workspaces[tid],
-            proxy_workspaces[tid],
-            to_proxy_tensor_workspaces[tid],
-        )
+        if use_fortran_hotpaths
+            _f_multiply_kernelft!(loc, kernel_ft, nd, nexp_half)
+            _f_pw2proxypot_3d!(@view(proxy_pot[:, :, ibox]), loc, tab_pw2coefs_f, nd, porder, npw)
+        else
+            @views loc .*= kernel_ft
+            _pw_to_proxy!(
+                @view(proxy_pot[:, :, ibox]),
+                loc,
+                pw_data.tab_pw2pot[level + 1],
+                tree.ndim,
+                porder,
+                npw,
+                nd,
+                pw_workspaces[tid],
+                proxy_workspaces[tid],
+                to_proxy_tensor_workspaces[tid],
+            )
+        end
     end
 
     return proxy_pot
