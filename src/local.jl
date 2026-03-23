@@ -121,42 +121,64 @@ function apply_local!(pot, tree::BoxTree, fvals, tables::LocalTables, lists::Int
     level_count = size(tables.tab, 5)
     work_type = promote_type(eltype(pot), eltype(fvals), eltype(tables.tab), eltype(sog_weights))
     leaf_boxes = collect(leaves(tree))
+    use_fortran_hotpath = _FORTRAN_HOTPATHS_AVAILABLE[] &&
+                          pot isa StridedArray{Float64,3} &&
+                          fvals isa StridedArray{Float64,3} &&
+                          eltype(tables.tab) === Float64
+    ind_cint = use_fortran_hotpath ? Array{Cint}(tables.ind) : nothing
 
     Threads.@threads for ileaf in eachindex(leaf_boxes)
         ibox = leaf_boxes[ileaf]
         level_index = tree.level[ibox] + 1
         level_index <= level_count || throw(BoundsError(tables.tab, (:, :, :, :, level_index)))
-
-        ff = Array{work_type,3}(undef, n, n, n)
-        ff2 = similar(ff)
         pot_box = @view pot[:, :, ibox]
+        ff = use_fortran_hotpath ? nothing : Array{work_type,3}(undef, n, n, n)
+        ff2 = use_fortran_hotpath ? nothing : similar(ff)
 
         for jbox in lists.list1[ibox]
             offset_indices = _local_offset_indices(tree, ibox, jbox)
             src_box = @view fvals[:, :, jbox]
+            ixyz = use_fortran_hotpath ? Cint[offset_index - (_LOCAL_OFFSET_RADIUS + 1) for offset_index in offset_indices] : nothing
 
             for idelta in eachindex(sog_deltas, sog_weights)
                 weight = sog_weights[idelta]
                 iszero(weight) && continue
 
-                pattern_x = @view tables.ind[:, :, offset_indices[1], idelta, level_index]
-                pattern_y = @view tables.ind[:, :, offset_indices[2], idelta, level_index]
-                pattern_z = @view tables.ind[:, :, offset_indices[3], idelta, level_index]
+                if use_fortran_hotpath
+                    tab_slice = @view tables.tab[:, :, :, idelta, level_index]
+                    ind_slice = @view ind_cint[:, :, :, idelta, level_index]
+                    _f_tens_prod_to_potloc!(
+                        pot_box,
+                        src_box,
+                        weight,
+                        tab_slice,
+                        ind_slice,
+                        ixyz,
+                        tree.ndim,
+                        size(src_box, 1),
+                        n,
+                        _LOCAL_OFFSET_RADIUS,
+                    )
+                else
+                    pattern_x = @view tables.ind[:, :, offset_indices[1], idelta, level_index]
+                    pattern_y = @view tables.ind[:, :, offset_indices[2], idelta, level_index]
+                    pattern_z = @view tables.ind[:, :, offset_indices[3], idelta, level_index]
 
-                _apply_local_sparse_3d!(
-                    pot_box,
-                    src_box,
-                    @view(tables.tab[:, :, offset_indices[1], idelta, level_index]),
-                    pattern_x,
-                    @view(tables.tab[:, :, offset_indices[2], idelta, level_index]),
-                    pattern_y,
-                    @view(tables.tab[:, :, offset_indices[3], idelta, level_index]),
-                    pattern_z,
-                    weight,
-                    ff,
-                    ff2,
-                    n,
-                )
+                    _apply_local_sparse_3d!(
+                        pot_box,
+                        src_box,
+                        @view(tables.tab[:, :, offset_indices[1], idelta, level_index]),
+                        pattern_x,
+                        @view(tables.tab[:, :, offset_indices[2], idelta, level_index]),
+                        pattern_y,
+                        @view(tables.tab[:, :, offset_indices[3], idelta, level_index]),
+                        pattern_z,
+                        weight,
+                        ff,
+                        ff2,
+                        n,
+                    )
+                end
             end
         end
     end

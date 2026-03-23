@@ -124,3 +124,30 @@ end
         @test out_ws ≈ out
     end
 end
+
+@testset "Fortran Pass Hotpath Wrapper" begin
+    if BoxDMK._FORTRAN_HOTPATHS_AVAILABLE[]
+        tree = _two_level_tree()
+        proxy = BoxDMK.build_proxy_data(LegendreBasis(), tree.norder, 4, tree.ndim)
+        child = 3
+        mats = BoxDMK._child_transfer_mats(proxy.c2p_transmat, tree.ndim, child)
+        umat_nd = Array{Float64}(undef, proxy.porder, proxy.porder, tree.ndim)
+        for d in 1:tree.ndim
+            umat_nd[:, :, d] .= mats[d]
+        end
+
+        fin = collect(1.0:proxy.ncbox)
+        expected = zeros(Float64, 1, proxy.ncbox)
+        BoxDMK.tensor_product_apply!(expected, mats, reshape(fin, 1, :), proxy.porder, tree.ndim, 1)
+
+        fout = fill(-7.0, proxy.ncbox)
+        BoxDMK._f_tens_prod_trans!(fout, fin, umat_nd, tree.ndim, proxy.porder, proxy.porder, 0)
+        @test fout ≈ vec(expected) atol = 1e-12 rtol = 1e-12
+
+        accum = fill(3.5, proxy.ncbox)
+        BoxDMK._f_tens_prod_trans!(accum, fin, umat_nd, tree.ndim, proxy.porder, proxy.porder, 1)
+        @test accum ≈ vec(expected) .+ 3.5 atol = 1e-12 rtol = 1e-12
+    else
+        @test_skip "Fortran hotpaths unavailable"
+    end
+end

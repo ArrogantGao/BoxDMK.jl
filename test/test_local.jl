@@ -115,3 +115,67 @@ end
     @test all(sum(@view(pot[1, :, ibox])) > 0 for ibox in leaf_boxes)
     @test all(all(@view(pot[1, :, ibox]) .>= 0) for ibox in leaf_boxes)
 end
+
+@testset "Fortran Local Hotpath Wrapper" begin
+    if BoxDMK._FORTRAN_HOTPATHS_AVAILABLE[]
+        tree = _local_two_level_tree()
+        deltas = [0.01]
+        weights = [0.7]
+        tables = BoxDMK.build_local_tables(
+            LaplaceKernel(),
+            tree.basis,
+            tree.norder,
+            tree.ndim,
+            deltas,
+            tree.boxsize,
+            tree.nlevels,
+        )
+
+        ibox = 2
+        jbox = 3
+        idelta = 1
+        level_index = tree.level[ibox] + 1
+        n = tree.norder
+        npbox = n^tree.ndim
+        src_box = reshape(collect(1.0:npbox), 1, npbox)
+        pot_ref = zeros(Float64, 1, npbox)
+        pot_fortran = zeros(Float64, 1, npbox)
+        ff = Array{Float64,3}(undef, n, n, n)
+        ff2 = similar(ff)
+
+        offset_indices = BoxDMK._local_offset_indices(tree, ibox, jbox)
+        BoxDMK._apply_local_sparse_3d!(
+            pot_ref,
+            src_box,
+            @view(tables.tab[:, :, offset_indices[1], idelta, level_index]),
+            @view(tables.ind[:, :, offset_indices[1], idelta, level_index]),
+            @view(tables.tab[:, :, offset_indices[2], idelta, level_index]),
+            @view(tables.ind[:, :, offset_indices[2], idelta, level_index]),
+            @view(tables.tab[:, :, offset_indices[3], idelta, level_index]),
+            @view(tables.ind[:, :, offset_indices[3], idelta, level_index]),
+            weights[idelta],
+            ff,
+            ff2,
+            n,
+        )
+
+        ind_cint = Array{Cint}(tables.ind)
+        ixyz = Cint[offset_indices[d] - 2 for d in 1:tree.ndim]
+        BoxDMK._f_tens_prod_to_potloc!(
+            pot_fortran,
+            src_box,
+            weights[idelta],
+            @view(tables.tab[:, :, :, idelta, level_index]),
+            @view(ind_cint[:, :, :, idelta, level_index]),
+            ixyz,
+            tree.ndim,
+            size(src_box, 1),
+            n,
+            BoxDMK._LOCAL_OFFSET_RADIUS,
+        )
+
+        @test pot_fortran ≈ pot_ref atol = 1e-12 rtol = 1e-12
+    else
+        @test_skip "Fortran hotpaths unavailable"
+    end
+end
