@@ -561,6 +561,44 @@ function _ftstate_adaptive_refine!(
     return state
 end
 
+function _ftstate_computecoll!(state::_FortranTreeState)
+    state.nnbors[1:state.nboxes] .= 0
+    state.nbors[:, 1:state.nboxes] .= -1
+    state.nnbors[1] = 1
+    state.nbors[1, 1] = 1
+
+    for ilev in 1:state.nlevels
+        ifirstbox = state.laddr[1, _lev(ilev)]
+        ilastbox = state.laddr[2, _lev(ilev)]
+        for ibox in ifirstbox:ilastbox
+            dad = state.iparent[ibox]
+            for i in 1:state.nnbors[dad]
+                jbox = state.nbors[i, dad]
+                for j in 1:state.mc
+                    kbox = state.ichild[j, jbox]
+                    kbox > 0 || continue
+
+                    ifnbor = true
+                    for k in 1:state.ndim
+                        dis = abs(state.centers[k, kbox] - state.centers[k, ibox])
+                        if dis > 1.05 * state.boxsize[_lev(ilev)]
+                            ifnbor = false
+                            break
+                        end
+                    end
+
+                    if ifnbor
+                        state.nnbors[ibox] += 1
+                        state.nbors[state.nnbors[ibox], ibox] = kbox
+                    end
+                end
+            end
+        end
+    end
+
+    return state
+end
+
 function _global_l2_scale(boxes, quadrature_weights::AbstractVector{<:Real}, ndim::Int)
     total = 0.0
     cell_count = 2^ndim
