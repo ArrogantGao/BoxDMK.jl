@@ -20,6 +20,7 @@ mutable struct _FortranTreeState
     fvals::Array{Float64, 3}
     rintbs::Vector{Float64}
     rintl::Vector{Float64}
+    rint::Float64
     iflag::Vector{Int}
     nnbors::Vector{Int}
     nbors::Matrix{Int}
@@ -51,6 +52,7 @@ function _ftstate_init(ndim::Int, nd::Int, npbox::Int, nbmax::Int, nlmax::Int)
         zeros(Float64, nd, npbox, nbmax),
         zeros(Float64, nbmax),
         zeros(Float64, nlmax + 1),
+        0.0,
         zeros(Int, nbmax),
         zeros(Int, nbmax),
         fill(-1, mnbors, nbmax),
@@ -294,6 +296,269 @@ function _modal_tail_error(
     end
 
     return error * (Float64(boxsize) / 2)^Float64(eta) / Float64(rsum)
+end
+
+function _prefix_sum(values::AbstractVector{<:Integer})
+    sums = Vector{Int}(undef, length(values))
+    total = 0
+
+    for i in eachindex(values)
+        total += Int(values[i])
+        sums[i] = total
+    end
+
+    return sums
+end
+
+function _ftstate_init_root!(
+    state::_FortranTreeState,
+    f,
+    grid::AbstractMatrix{<:Real},
+    wts2::AbstractVector{<:Real},
+    boxlen::Real,
+    coord_shift::Real,
+)
+    boxlen_value = Float64(boxlen)
+    state.boxsize[_lev(0)] = boxlen_value
+    state.fvals[:, :, 1] .= _sample_box(f, zeros(Float64, state.ndim), boxlen_value, grid, size(state.fvals, 1), coord_shift)
+
+    rsc = boxlen_value^2 / state.mc
+    state.rintbs[1] = 0.0
+    for ipoint in eachindex(wts2)
+        weighted_scale = Float64(wts2[ipoint]) * rsc
+        @inbounds for idim in 1:size(state.fvals, 1)
+            state.rintbs[1] += state.fvals[idim, ipoint, 1]^2 * weighted_scale
+        end
+    end
+
+    state.rint = sqrt(state.rintbs[1])
+    state.rintl[_lev(0)] = state.rint
+    return state
+end
+
+function _ftstate_find_box_refine!(
+    irefinebox::Vector{Int},
+    state::_FortranTreeState,
+    ifirstbox::Int,
+    nbloc::Int,
+    modal_transforms::Tuple,
+    rmask::AbstractVector,
+    rsum::Real,
+    boxsize::Real,
+    rsc::Real,
+    eps::Real,
+    eta::Real,
+    norder::Int,
+    nd::Int,
+    coeffs,
+    workspace,
+)
+    if 30.0 * Float64(boxsize) > 5.0
+        fill!(irefinebox, 1)
+        return 1
+    end
+
+    irefine = 0
+    for i in 1:nbloc
+        ibox = ifirstbox + i - 1
+        irefinebox[i] = 0
+
+        error = _modal_tail_error(
+            @view(state.fvals[:, :, ibox]),
+            modal_transforms,
+            rmask,
+            rsum,
+            boxsize,
+            eta,
+            norder,
+            state.ndim,
+            nd,
+            coeffs,
+            workspace,
+        )
+
+        if error > Float64(eps) * Float64(rsc)
+            irefinebox[i] = 1
+            irefine = 1
+        end
+    end
+
+    return irefine
+end
+
+function _ftstate_refine_boxes!(
+    state::_FortranTreeState,
+    irefinebox::Vector{Int},
+    ifirstbox::Int,
+    nbloc::Int,
+    bs::Real,
+    nlctr::Int,
+    f,
+    grid::AbstractMatrix{<:Real},
+    coord_shift::Real,
+)
+    nbctr = state.nboxes
+    isum = _prefix_sum(irefinebox)
+    bsh = Float64(bs) / 2
+    mc = state.mc
+    bs_value = Float64(bs)
+    coord_shift_value = Float64(coord_shift)
+    nd = size(state.fvals, 1)
+
+    for i in 1:nbloc
+        ibox = ifirstbox + i - 1
+        irefinebox[i] == 1 || continue
+
+        nbl = nbctr + (isum[i] - 1) * mc
+        state.nchild[ibox] = mc
+        for j in 1:mc
+            jbox = nbl + j
+            child_bits = j - 1
+            for k in 1:state.ndim
+                sign = ((child_bits >> (k - 1)) & 0x1) == 0 ? -1.0 : 1.0
+                state.centers[k, jbox] = state.centers[k, ibox] + sign * bsh
+            end
+
+            state.fvals[:, :, jbox] .= _sample_box(
+                f,
+                @view(state.centers[:, jbox]),
+                bs_value,
+                grid,
+                nd,
+                coord_shift_value,
+            )
+            state.iparent[jbox] = ibox
+            state.nchild[jbox] = 0
+            state.ichild[:, jbox] .= -1
+            state.ichild[j, ibox] = jbox
+            state.ilevel[jbox] = nlctr
+        end
+    end
+
+    if nbloc > 0
+        state.nboxes = nbctr + isum[end] * mc
+    end
+    return state
+end
+
+function _ftstate_update_rints!(
+    state::_FortranTreeState,
+    ifirstbox::Int,
+    nbloc::Int,
+    wts::AbstractVector{<:Real},
+    rsc::Real,
+)
+    rintsq = state.rint^2
+    for i in 1:nbloc
+        ibox = ifirstbox + i - 1
+        if state.nchild[ibox] > 0
+            rintsq -= state.rintbs[ibox]
+        end
+    end
+    rintsq = max(rintsq, 0.0)
+
+    nd = size(state.fvals, 1)
+    npbox = size(state.fvals, 2)
+    rsc_value = Float64(rsc)
+    for i in 1:nbloc
+        ibox = ifirstbox + i - 1
+        if state.nchild[ibox] > 0
+            for j in 1:state.mc
+                jbox = state.ichild[j, ibox]
+                state.rintbs[jbox] = 0.0
+                for l in 1:npbox
+                    weighted_scale = Float64(wts[l]) * rsc_value
+                    @inbounds for idim in 1:nd
+                        state.rintbs[jbox] += state.fvals[idim, l, jbox]^2 * weighted_scale
+                    end
+                end
+                rintsq += state.rintbs[jbox]
+            end
+        end
+    end
+
+    state.rint = sqrt(rintsq)
+    return state
+end
+
+function _ftstate_adaptive_refine!(
+    state::_FortranTreeState,
+    f,
+    grid::AbstractMatrix{<:Real},
+    wts2::AbstractVector{<:Real},
+    modal_transforms::Tuple,
+    rmask::AbstractVector,
+    rsum::Real,
+    eps::Real,
+    eta::Real,
+    norder::Int,
+)
+    nd = size(state.fvals, 1)
+    coeffs = Matrix{Float64}(undef, nd, norder^state.ndim)
+    workspace = _tensor_apply_workspace(Float64, nd, norder, state.ndim)
+
+    for ilev in 0:(state.nlmax - 1)
+        ifirstbox = state.laddr[1, _lev(ilev)]
+        ilastbox = state.laddr[2, _lev(ilev)]
+        nbloc = ilastbox - ifirstbox + 1
+        irefinebox = zeros(Int, nbloc)
+        rsc = sqrt(inv(state.boxsize[_lev(0)]^state.ndim)) * state.rintl[_lev(ilev)]
+        irefine = _ftstate_find_box_refine!(
+            irefinebox,
+            state,
+            ifirstbox,
+            nbloc,
+            modal_transforms,
+            rmask,
+            rsum,
+            state.boxsize[_lev(ilev)],
+            rsc,
+            eps,
+            eta,
+            norder,
+            nd,
+            coeffs,
+            workspace,
+        )
+
+        if irefine == 0
+            state.nlevels = ilev
+            return state
+        end
+
+        nbadd = count(==(1), irefinebox) * state.mc
+        if state.nboxes + nbadd > state.nbmax
+            _ftstate_grow!(state, state.nboxes + nbadd)
+        end
+
+        state.boxsize[_lev(ilev + 1)] = state.boxsize[_lev(ilev)] / 2
+        state.laddr[1, _lev(ilev + 1)] = state.nboxes + 1
+
+        _ftstate_refine_boxes!(
+            state,
+            irefinebox,
+            ifirstbox,
+            nbloc,
+            state.boxsize[_lev(ilev + 1)],
+            ilev + 1,
+            f,
+            grid,
+            state.boxsize[_lev(0)] / 2,
+        )
+
+        _ftstate_update_rints!(
+            state,
+            ifirstbox,
+            nbloc,
+            wts2,
+            state.boxsize[_lev(ilev + 1)]^state.ndim / state.mc,
+        )
+        state.rintl[_lev(ilev + 1)] = state.rint
+        state.laddr[2, _lev(ilev + 1)] = state.nboxes
+    end
+
+    state.nlevels = state.nlmax
+    return state
 end
 
 function _global_l2_scale(boxes, quadrature_weights::AbstractVector{<:Real}, ndim::Int)
