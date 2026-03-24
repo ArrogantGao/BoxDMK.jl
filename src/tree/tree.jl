@@ -855,16 +855,50 @@ function build_tree(
     eta::Real = 1.0,
 )
     _ = dpars
-    data = build_tree_fortran(
-        f,
-        kernel,
-        basis;
-        ndim = ndim,
-        norder = norder,
-        eps = eps,
-        boxlen = boxlen,
-        nd = nd,
-        eta = eta,
-    )
-    return data.tree, data.fvals
+    ndim_int = Int(ndim)
+    ndim_int > 0 || throw(ArgumentError("ndim must be positive"))
+    nd_int = Int(nd)
+    nd_int > 0 || throw(ArgumentError("nd must be positive"))
+    norder_int = _check_basis_order(norder)
+    eps > 0 || throw(ArgumentError("eps must be positive"))
+    boxlen > 0 || throw(ArgumentError("boxlen must be positive"))
+    eps_value = Float64(eps)
+    boxlen_value = Float64(boxlen)
+    eta_value = Float64(eta)
+
+    mc = 2^ndim_int
+    npbox = norder_int^ndim_int
+
+    nodes, weights = nodes_and_weights(basis, norder_int)
+    # Grid on [-1,1]^d — _sample_box handles the /2 scaling internally via halfsize
+    grid = _reference_grid(Float64.(nodes), ndim_int)
+    # Tensor-product weights on [-1,1]^d for update_rints
+    wts2 = _reference_weights(Float64.(weights), ndim_int)
+
+    modal_1d = forward_transform(basis, norder_int)
+    modal_transforms = ntuple(_ -> modal_1d, ndim_int)
+    rmask, rsum = _modal_tail_mask(ndim_int, norder_int)
+
+    coord_shift = boxlen_value / 2
+
+    # Initialize state
+    nbmax = 10_000
+    state = _ftstate_init(ndim_int, nd_int, npbox, nbmax, _MAX_TREE_LEVELS)
+
+    # Initialize root box and rint
+    _ftstate_init_root!(state, f, grid, wts2, boxlen_value, coord_shift)
+
+    # Adaptive refinement
+    _ftstate_adaptive_refine!(state, f, grid, wts2, modal_transforms, rmask, rsum, eps_value, eta_value, norder_int)
+
+    # Compute colleagues (unconditionally)
+    _ftstate_computecoll!(state)
+
+    # Level restriction (only if nlevels >= 2)
+    if state.nlevels >= 2
+        _ftstate_fix_lr!(state, f, grid, coord_shift)
+    end
+
+    # Materialize into BoxTree + fvals
+    return _ftstate_to_boxtree(state, basis, norder_int, boxlen_value)
 end
