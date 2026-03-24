@@ -2,6 +2,7 @@ module BoxDMK
 
 using LinearAlgebra
 using JLD2
+using Libdl
 
 function build_tree end
 function bdmk end

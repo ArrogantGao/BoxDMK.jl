@@ -124,6 +124,27 @@ function _stage_error_report(problem, kernel)
     pot .+= proxy_box_pot
     pot_step9 = copy(pot)
 
+    if snapshot.step2_pot === nothing ||
+       snapshot.step3_proxycharge === nothing ||
+       snapshot.step6_proxypotential === nothing ||
+       snapshot.step7_pot === nothing ||
+       snapshot.step8_pot === nothing ||
+       snapshot.step9_pot === nothing
+        return (
+            reference_tree_nboxes = BoxDMK.nboxes(tree),
+            reference_tree_nlevels = tree.nlevels,
+            debug_available = false,
+            stages = nothing,
+            increments = nothing,
+            final = (
+                relerr = relerr(reference.pot, pot_step9),
+                maxabs = maxabsdiff(reference.pot, pot_step9),
+                fortran_norm = norm(reference.pot),
+                julia_norm = norm(pot_step9),
+            ),
+        )
+    end
+
     fortran_local = snapshot.step7_pot .- snapshot.step2_pot
     julia_local = pot_step7 .- pot_step2
     fortran_asym = snapshot.step8_pot .- snapshot.step7_pot
@@ -134,6 +155,7 @@ function _stage_error_report(problem, kernel)
     return (
         reference_tree_nboxes = BoxDMK.nboxes(tree),
         reference_tree_nlevels = tree.nlevels,
+        debug_available = true,
         stages = (
             step2 = (relerr = relerr(snapshot.step2_pot, pot_step2), maxabs = maxabsdiff(snapshot.step2_pot, pot_step2), fortran_norm = norm(snapshot.step2_pot), julia_norm = norm(pot_step2)),
             step3 = (relerr = relerr(snapshot.step3_proxycharge, proxy_charges), maxabs = maxabsdiff(snapshot.step3_proxycharge, proxy_charges), fortran_norm = norm(snapshot.step3_proxycharge), julia_norm = norm(proxy_charges)),

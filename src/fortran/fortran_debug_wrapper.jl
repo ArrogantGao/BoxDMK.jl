@@ -1,9 +1,34 @@
+const _FORTRAN_DEBUG_SYMBOL_CACHE = Dict{Symbol, Bool}()
+
+function _has_fortran_debug_symbol(symbol::Symbol)
+    return get!(_FORTRAN_DEBUG_SYMBOL_CACHE, symbol) do
+        handle = Libdl.dlopen(_fortran_solve_libboxdmk_path())
+        ptr = Libdl.dlsym_e(handle, symbol)
+        Libdl.dlclose(handle)
+        ptr != C_NULL
+    end
+end
+
 function reset_fortran_debug!()
+    _has_fortran_debug_symbol(:boxdmk_debug_reset) || return nothing
     ccall((:boxdmk_debug_reset, _fortran_solve_libboxdmk_path()), Cvoid, ())
     return nothing
 end
 
 function _fortran_debug_meta()
+    _has_fortran_debug_symbol(:boxdmk_debug_get_meta) || return (
+        nd = 0,
+        npbox = 0,
+        ncbox = 0,
+        nboxes = 0,
+        has_step2 = false,
+        has_step3 = false,
+        has_step6 = false,
+        has_step7 = false,
+        has_step8 = false,
+        has_step9 = false,
+    )
+
     nd = Ref{Cint}(0)
     npbox = Ref{Cint}(0)
     ncbox = Ref{Cint}(0)

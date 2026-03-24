@@ -97,37 +97,46 @@ end
 @testset "Exact Fortran Tree Parity" begin
     f(x) = [exp(-40 * sum((x .- 0.5) .^ 2))]
 
-    tree, fvals = build_tree(
-        f,
-        LaplaceKernel(),
-        LegendreBasis();
-        ndim = 3,
-        norder = 4,
-        eps = 1e-3,
-        boxlen = 1.0,
-        nd = 1,
-        eta = 1.0,
-    )
-    ftree = build_tree_fortran(
-        f,
-        LaplaceKernel(),
-        LegendreBasis();
-        ndim = 3,
-        norder = 4,
-        eps = 1e-3,
-        boxlen = 1.0,
-        nd = 1,
-        eta = 1.0,
-    )
+    function check_exact_parity(kernel, basis; ndim)
+        tree, fvals = build_tree(
+            f,
+            kernel,
+            basis;
+            ndim = ndim,
+            norder = 4,
+            eps = 1e-3,
+            boxlen = 1.0,
+            nd = 1,
+            eta = 1.0,
+        )
+        ftree = build_tree_fortran(
+            f,
+            kernel,
+            basis;
+            ndim = ndim,
+            norder = 4,
+            eps = 1e-3,
+            boxlen = 1.0,
+            nd = 1,
+            eta = 1.0,
+        )
 
-    @test tree.nlevels == ftree.tree.nlevels
-    @test tree.level == ftree.tree.level
-    @test tree.parent == ftree.tree.parent
-    @test tree.children == ftree.tree.children
-    @test tree.colleagues == ftree.tree.colleagues
-    @test tree.centers ≈ ftree.tree.centers atol = 1e-14
-    @test tree.boxsize ≈ ftree.tree.boxsize atol = 1e-14
-    @test fvals ≈ ftree.fvals atol = 1e-12
+        @test tree.nlevels == ftree.tree.nlevels
+        @test tree.level == ftree.tree.level
+        @test tree.parent == ftree.tree.parent
+        @test tree.children == ftree.tree.children
+        @test tree.colleagues == ftree.tree.colleagues
+        @test tree.centers ≈ ftree.tree.centers atol = 1e-14
+        @test tree.boxsize ≈ ftree.tree.boxsize atol = 1e-14
+        @test fvals ≈ ftree.fvals atol = 1e-12
+    end
+
+    check_exact_parity(LaplaceKernel(), LegendreBasis(); ndim = 3)
+    check_exact_parity(YukawaKernel(1.0), LegendreBasis(); ndim = 3)
+    check_exact_parity(SqrtLaplaceKernel(), LegendreBasis(); ndim = 3)
+    check_exact_parity(LaplaceKernel(), ChebyshevBasis(); ndim = 3)
+    check_exact_parity(LaplaceKernel(), LegendreBasis(); ndim = 1)
+    check_exact_parity(LaplaceKernel(), LegendreBasis(); ndim = 2)
 end
 
 @testset "Tree Matches Fortran Benchmark" begin
