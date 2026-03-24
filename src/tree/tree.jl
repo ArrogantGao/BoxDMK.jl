@@ -1,5 +1,146 @@
 const _MAX_TREE_LEVELS = 200
 
+_lev(ilev) = ilev + 1
+
+mutable struct _FortranTreeState
+    ndim::Int
+    mc::Int
+    mnbors::Int
+    nboxes::Int
+    nlevels::Int
+    nbmax::Int
+    nlmax::Int
+    laddr::Matrix{Int}
+    ilevel::Vector{Int}
+    iparent::Vector{Int}
+    nchild::Vector{Int}
+    ichild::Matrix{Int}
+    centers::Matrix{Float64}
+    boxsize::Vector{Float64}
+    fvals::Array{Float64, 3}
+    rintbs::Vector{Float64}
+    rintl::Vector{Float64}
+    iflag::Vector{Int}
+    nnbors::Vector{Int}
+    nbors::Matrix{Int}
+end
+
+function _ftstate_init(ndim::Int, nd::Int, npbox::Int, nbmax::Int, nlmax::Int)
+    mc = 2^ndim
+    mnbors = 3^ndim
+    laddr = Matrix{Int}(undef, 2, nlmax + 1)
+    laddr[1, :] .= 0
+    laddr[2, :] .= -1
+    laddr[:, _lev(0)] .= (1, 1)
+
+    state = _FortranTreeState(
+        ndim,
+        mc,
+        mnbors,
+        1,
+        0,
+        nbmax,
+        nlmax,
+        laddr,
+        zeros(Int, nbmax),
+        fill(-1, nbmax),
+        zeros(Int, nbmax),
+        fill(-1, mc, nbmax),
+        zeros(Float64, ndim, nbmax),
+        zeros(Float64, nlmax + 1),
+        zeros(Float64, nd, npbox, nbmax),
+        zeros(Float64, nbmax),
+        zeros(Float64, nlmax + 1),
+        zeros(Int, nbmax),
+        zeros(Int, nbmax),
+        fill(-1, mnbors, nbmax),
+    )
+
+    state.ilevel[1] = 0
+    state.iparent[1] = -1
+    state.nchild[1] = 0
+    state.ichild[:, 1] .= -1
+    state.centers[:, 1] .= 0.0
+    return state
+end
+
+function _ftstate_grow!(state::_FortranTreeState, new_nbmax::Int)
+    new_nbmax <= state.nbmax && return state
+
+    used = state.nboxes
+    new_ilevel = zeros(Int, new_nbmax)
+    new_iparent = fill(-1, new_nbmax)
+    new_nchild = zeros(Int, new_nbmax)
+    new_ichild = fill(-1, state.mc, new_nbmax)
+    new_centers = zeros(Float64, state.ndim, new_nbmax)
+    nd, npbox, _ = size(state.fvals)
+    new_fvals = zeros(Float64, nd, npbox, new_nbmax)
+    new_rintbs = zeros(Float64, new_nbmax)
+    new_iflag = zeros(Int, new_nbmax)
+    new_nnbors = zeros(Int, new_nbmax)
+    new_nbors = fill(-1, state.mnbors, new_nbmax)
+
+    new_ilevel[1:used] .= state.ilevel[1:used]
+    new_iparent[1:used] .= state.iparent[1:used]
+    new_nchild[1:used] .= state.nchild[1:used]
+    new_ichild[:, 1:used] .= state.ichild[:, 1:used]
+    new_centers[:, 1:used] .= state.centers[:, 1:used]
+    new_fvals[:, :, 1:used] .= state.fvals[:, :, 1:used]
+    new_rintbs[1:used] .= state.rintbs[1:used]
+    new_iflag[1:used] .= state.iflag[1:used]
+    new_nnbors[1:used] .= state.nnbors[1:used]
+    new_nbors[:, 1:used] .= state.nbors[:, 1:used]
+
+    state.nbmax = new_nbmax
+    state.ilevel = new_ilevel
+    state.iparent = new_iparent
+    state.nchild = new_nchild
+    state.ichild = new_ichild
+    state.centers = new_centers
+    state.fvals = new_fvals
+    state.rintbs = new_rintbs
+    state.iflag = new_iflag
+    state.nnbors = new_nnbors
+    state.nbors = new_nbors
+    return state
+end
+
+function _ftstate_to_boxtree(state::_FortranTreeState, basis::AbstractBasis, norder::Int, boxlen::Real)
+    nboxes = state.nboxes
+    centers = copy(state.centers[:, 1:nboxes])
+    centers .+= Float64(boxlen) / 2
+
+    parent = Vector{Int}(undef, nboxes)
+    children = Matrix{Int}(undef, state.mc, nboxes)
+    level = copy(state.ilevel[1:nboxes])
+    colleagues = Vector{Vector{Int}}(undef, nboxes)
+
+    for ibox in 1:nboxes
+        parent[ibox] = state.iparent[ibox] < 0 ? 0 : state.iparent[ibox]
+        for ich in 1:state.mc
+            child = state.ichild[ich, ibox]
+            children[ich, ibox] = child < 0 ? 0 : child
+        end
+        colleagues[ibox] = state.nnbors[ibox] > 0 ? collect(state.nbors[1:state.nnbors[ibox], ibox]) : Int[]
+    end
+
+    boxsize = [Float64(boxlen) / (2.0^ilevel) for ilevel in 0:state.nlevels]
+    tree = BoxTree(
+        state.ndim,
+        state.nlevels,
+        centers,
+        boxsize,
+        parent,
+        children,
+        colleagues,
+        level,
+        basis,
+        norder,
+    )
+
+    return tree, copy(state.fvals[:, :, 1:nboxes])
+end
+
 mutable struct _TreeBoxState{T<:Real}
     center::Vector{T}
     size::T
