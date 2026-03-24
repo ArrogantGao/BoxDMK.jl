@@ -568,34 +568,318 @@ function _ftstate_computecoll!(state::_FortranTreeState)
     state.nbors[1, 1] = 1
 
     for ilev in 1:state.nlevels
-        ifirstbox = state.laddr[1, _lev(ilev)]
-        ilastbox = state.laddr[2, _lev(ilev)]
-        for ibox in ifirstbox:ilastbox
-            dad = state.iparent[ibox]
-            for i in 1:state.nnbors[dad]
-                jbox = state.nbors[i, dad]
-                for j in 1:state.mc
-                    kbox = state.ichild[j, jbox]
-                    kbox > 0 || continue
+        _ftstate_fill_colleagues!(state, state.laddr[1, _lev(ilev)], state.laddr[2, _lev(ilev)], ilev)
+    end
 
-                    ifnbor = true
-                    for k in 1:state.ndim
-                        dis = abs(state.centers[k, kbox] - state.centers[k, ibox])
-                        if dis > 1.05 * state.boxsize[_lev(ilev)]
-                            ifnbor = false
-                            break
-                        end
+    return state
+end
+
+function _prefix_count_positive(values::AbstractVector{<:Integer})
+    sums = Vector{Int}(undef, length(values))
+    total = 0
+
+    for i in eachindex(values)
+        Int(values[i]) > 0 && (total += 1)
+        sums[i] = total
+    end
+
+    return sums
+end
+
+function _ftstate_fill_colleagues!(state::_FortranTreeState, ifirstbox::Int, ilastbox::Int, ilev::Int)
+    for ibox in ifirstbox:ilastbox
+        state.nnbors[ibox] = 0
+        state.nbors[:, ibox] .= -1
+        dad = state.iparent[ibox]
+        for i in 1:state.nnbors[dad]
+            jbox = state.nbors[i, dad]
+            for j in 1:state.mc
+                kbox = state.ichild[j, jbox]
+                kbox > 0 || continue
+
+                ifnbor = true
+                for k in 1:state.ndim
+                    dis = abs(state.centers[k, kbox] - state.centers[k, ibox])
+                    if dis > 1.05 * state.boxsize[_lev(ilev)]
+                        ifnbor = false
+                        break
                     end
+                end
 
-                    if ifnbor
-                        state.nnbors[ibox] += 1
-                        state.nbors[state.nnbors[ibox], ibox] = kbox
+                if ifnbor
+                    state.nnbors[ibox] += 1
+                    state.nbors[state.nnbors[ibox], ibox] = kbox
+                end
+            end
+        end
+    end
+
+    return state
+end
+
+function _ftstate_refine_boxes_flag!(
+    state::_FortranTreeState,
+    ifirstbox::Int,
+    nbloc::Int,
+    bs::Real,
+    nlctr::Int,
+    f,
+    grid::AbstractMatrix{<:Real},
+    coord_shift::Real,
+)
+    nbloc <= 0 && return state
+
+    ilastbox = ifirstbox + nbloc - 1
+    nbctr = state.nboxes
+    isum = _prefix_count_positive(@view(state.iflag[ifirstbox:ilastbox]))
+    bsh = Float64(bs) / 2
+    bs_value = Float64(bs)
+    coord_shift_value = Float64(coord_shift)
+    nd = size(state.fvals, 1)
+
+    for ibox in ifirstbox:ilastbox
+        state.iflag[ibox] > 0 || continue
+
+        state.nchild[ibox] = state.mc
+        nbl = nbctr + (isum[ibox - ifirstbox + 1] - 1) * state.mc
+        for j in 1:state.mc
+            jbox = nbl + j
+            child_bits = j - 1
+            for k in 1:state.ndim
+                sign = ((child_bits >> (k - 1)) & 0x1) == 0 ? -1.0 : 1.0
+                state.centers[k, jbox] = state.centers[k, ibox] + sign * bsh
+            end
+
+            state.fvals[:, :, jbox] .= _sample_box(
+                f,
+                @view(state.centers[:, jbox]),
+                bs_value,
+                grid,
+                nd,
+                coord_shift_value,
+            )
+            state.iparent[jbox] = ibox
+            state.nchild[jbox] = 0
+            state.ichild[:, jbox] .= -1
+            state.ichild[j, ibox] = jbox
+            state.ilevel[jbox] = nlctr + 1
+            state.iflag[jbox] = state.iflag[ibox] == 1 ? 3 : 0
+        end
+    end
+
+    state.nboxes = nbctr + isum[end] * state.mc
+    return state
+end
+
+function _ftstate_reorg!(state::_FortranTreeState, laddrtail::Matrix{Int})
+    nboxes = state.nboxes
+    tladdr = copy(state.laddr)
+    tilevel = copy(state.ilevel[1:nboxes])
+    tiparent = copy(state.iparent[1:nboxes])
+    tnchild = copy(state.nchild[1:nboxes])
+    tichild = copy(state.ichild[:, 1:nboxes])
+    tiflag = copy(state.iflag[1:nboxes])
+    tfvals = copy(state.fvals[:, :, 1:nboxes])
+    tcenters = copy(state.centers[:, 1:nboxes])
+    iboxtocurbox = zeros(Int, nboxes)
+
+    for ilev in 0:1
+        for ibox in state.laddr[1, _lev(ilev)]:state.laddr[2, _lev(ilev)]
+            iboxtocurbox[ibox] = ibox
+        end
+    end
+
+    curbox = state.laddr[1, _lev(2)]
+    for ilev in 2:state.nlevels
+        state.laddr[1, _lev(ilev)] = curbox
+        for ibox in tladdr[1, _lev(ilev)]:tladdr[2, _lev(ilev)]
+            state.ilevel[curbox] = tilevel[ibox]
+            state.nchild[curbox] = tnchild[ibox]
+            state.centers[:, curbox] .= tcenters[:, ibox]
+            state.fvals[:, :, curbox] .= tfvals[:, :, ibox]
+            state.iflag[curbox] = tiflag[ibox]
+            iboxtocurbox[ibox] = curbox
+            curbox += 1
+        end
+        for ibox in laddrtail[1, _lev(ilev)]:laddrtail[2, _lev(ilev)]
+            state.ilevel[curbox] = tilevel[ibox]
+            state.nchild[curbox] = tnchild[ibox]
+            state.centers[:, curbox] .= tcenters[:, ibox]
+            state.fvals[:, :, curbox] .= tfvals[:, :, ibox]
+            state.iflag[curbox] = tiflag[ibox]
+            iboxtocurbox[ibox] = curbox
+            curbox += 1
+        end
+        state.laddr[2, _lev(ilev)] = curbox - 1
+    end
+
+    for ibox in 1:nboxes
+        newbox = iboxtocurbox[ibox]
+        state.iparent[newbox] = tiparent[ibox] < 0 ? -1 : iboxtocurbox[tiparent[ibox]]
+        for j in 1:state.mc
+            child = tichild[j, ibox]
+            state.ichild[j, newbox] = child < 0 ? -1 : iboxtocurbox[child]
+        end
+    end
+
+    return state
+end
+
+function _ftstate_vol_updateflags!(state::_FortranTreeState, curlev::Int, laddr::Matrix{Int})
+    distest = 1.05 * (state.boxsize[_lev(curlev)] + state.boxsize[_lev(curlev + 1)]) / 2
+
+    for ibox in laddr[1, _lev(curlev)]:laddr[2, _lev(curlev)]
+        state.iflag[ibox] == 3 || continue
+        state.iflag[ibox] = 0
+
+        needs_refine = false
+        for i in 1:state.nnbors[ibox]
+            jbox = state.nbors[i, ibox]
+            for j in 1:state.mc
+                kbox = state.ichild[j, jbox]
+                if kbox > 0 && state.nchild[kbox] > 0
+                    ict = 0
+                    for k in 1:state.ndim
+                        dis = state.centers[k, kbox] - state.centers[k, ibox]
+                        abs(dis) <= distest && (ict += 1)
+                    end
+                    if ict == state.ndim
+                        state.iflag[ibox] = 1
+                        needs_refine = true
+                        break
+                    end
+                end
+            end
+            needs_refine && break
+        end
+    end
+
+    return state
+end
+
+function _ftstate_fix_lr!(
+    state::_FortranTreeState,
+    f,
+    grid::AbstractMatrix{<:Real},
+    coord_shift::Real,
+)
+    state.nlevels < 2 && return state
+
+    if 2 * state.mc * state.nboxes > state.nbmax
+        _ftstate_grow!(state, 2 * state.mc * state.nboxes)
+    end
+
+    state.iflag[1:state.nboxes] .= 0
+
+    for ilev in state.nlevels:-1:2
+        distest = 1.05 * (state.boxsize[_lev(ilev - 1)] + state.boxsize[_lev(ilev - 2)]) / 2
+        for ibox in state.laddr[1, _lev(ilev)]:state.laddr[2, _lev(ilev)]
+            idad = state.iparent[ibox]
+            igranddad = state.iparent[idad]
+            for i in 1:state.nnbors[igranddad]
+                jbox = state.nbors[i, igranddad]
+                if state.nchild[jbox] == 0 && state.iflag[jbox] == 0
+                    ict = 0
+                    for k in 1:state.ndim
+                        dis = state.centers[k, jbox] - state.centers[k, idad]
+                        abs(dis) <= distest && (ict += 1)
+                    end
+                    if ict == state.ndim
+                        state.iflag[jbox] = 1
                     end
                 end
             end
         end
     end
 
+    for ilev in state.nlevels:-1:1
+        distest = 1.05 * (state.boxsize[_lev(ilev)] + state.boxsize[_lev(ilev - 1)]) / 2
+        for ibox in state.laddr[1, _lev(ilev)]:state.laddr[2, _lev(ilev)]
+            if state.iflag[ibox] == 1 || state.iflag[ibox] == 2
+                idad = state.iparent[ibox]
+                for i in 1:state.nnbors[idad]
+                    jbox = state.nbors[i, idad]
+                    if state.nchild[jbox] == 0 && state.iflag[jbox] == 0
+                        ict = 0
+                        for k in 1:state.ndim
+                            dis = state.centers[k, jbox] - state.centers[k, ibox]
+                            abs(dis) <= distest && (ict += 1)
+                        end
+                        if ict == state.ndim
+                            state.iflag[jbox] = 2
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    laddrtail = Matrix{Int}(undef, 2, state.nlmax + 1)
+    laddrtail[1, :] .= 0
+    laddrtail[2, :] .= -1
+
+    for ilev in 1:(state.nlevels - 2)
+        laddrtail[1, _lev(ilev + 1)] = state.nboxes + 1
+        nbloc = state.laddr[2, _lev(ilev)] - state.laddr[1, _lev(ilev)] + 1
+        _ftstate_refine_boxes_flag!(
+            state,
+            state.laddr[1, _lev(ilev)],
+            nbloc,
+            state.boxsize[_lev(ilev + 1)],
+            ilev,
+            f,
+            grid,
+            coord_shift,
+        )
+        laddrtail[2, _lev(ilev + 1)] = state.nboxes
+    end
+
+    _ftstate_reorg!(state, laddrtail)
+    _ftstate_computecoll!(state)
+
+    for ibox in 1:state.nboxes
+        state.iflag[ibox] = state.iflag[ibox] == 3 ? 3 : 0
+    end
+
+    laddrtail[1, :] .= 0
+    laddrtail[2, :] .= -1
+
+    for ilev in 2:(state.nlevels - 2)
+        _ftstate_vol_updateflags!(state, ilev, state.laddr)
+        _ftstate_vol_updateflags!(state, ilev, laddrtail)
+
+        laddrtail[1, _lev(ilev + 1)] = state.nboxes + 1
+
+        nbloc = state.laddr[2, _lev(ilev)] - state.laddr[1, _lev(ilev)] + 1
+        _ftstate_refine_boxes_flag!(
+            state,
+            state.laddr[1, _lev(ilev)],
+            nbloc,
+            state.boxsize[_lev(ilev + 1)],
+            ilev,
+            f,
+            grid,
+            coord_shift,
+        )
+
+        nbloc_tail = laddrtail[2, _lev(ilev)] - laddrtail[1, _lev(ilev)] + 1
+        _ftstate_refine_boxes_flag!(
+            state,
+            laddrtail[1, _lev(ilev)],
+            nbloc_tail,
+            state.boxsize[_lev(ilev + 1)],
+            ilev,
+            f,
+            grid,
+            coord_shift,
+        )
+
+        laddrtail[2, _lev(ilev + 1)] = state.nboxes
+        _ftstate_fill_colleagues!(state, laddrtail[1, _lev(ilev + 1)], laddrtail[2, _lev(ilev + 1)], ilev + 1)
+    end
+
+    _ftstate_reorg!(state, laddrtail)
+    _ftstate_computecoll!(state)
     return state
 end
 
@@ -785,93 +1069,16 @@ function build_tree(
     eta::Real = 1.0,
 )
     _ = dpars
-    ndim_int = Int(ndim)
-    ndim_int > 0 || throw(ArgumentError("ndim must be positive"))
-    nd_int = Int(nd)
-    nd_int > 0 || throw(ArgumentError("nd must be positive"))
-    norder_int = _check_basis_order(norder)
-    eps > 0 || throw(ArgumentError("eps must be positive"))
-    boxlen > 0 || throw(ArgumentError("boxlen must be positive"))
-    eps_value = Float64(eps)
-
-    nodes, weights = nodes_and_weights(basis, norder_int)
-    reference_grid = _reference_grid(Float64.(nodes), ndim_int)
-    quadrature_weights = _reference_weights(Float64.(weights), ndim_int)
-    modal_1d = forward_transform(basis, norder_int)
-    modal_transforms = ntuple(_ -> modal_1d, ndim_int)
-    rmask, rsum = _modal_tail_mask(ndim_int, norder_int)
-    coeffs = Matrix{Float64}(undef, nd_int, norder_int^ndim_int)
-    coeff_workspace = _tensor_apply_workspace(Float64, nd_int, norder_int, ndim_int)
-    root_center = zeros(Float64, ndim_int)
-    coord_shift = Float64(boxlen) / 2
-    root_values = _sample_box(f, root_center, Float64(boxlen), reference_grid, nd_int, coord_shift)
-    root_box = _TreeBoxState(root_center, Float64(boxlen), 0, 0, zeros(Int, 2^ndim_int), root_values)
-    boxes = [root_box]
-    level_first = [1]
-    level_last = [1]
-    root_rint_scale = Float64(boxlen)^2 / (2^ndim_int)
-    current_rint = max(_box_l2_scale(root_values, quadrature_weights, root_rint_scale), Base.eps(Float64))
-    root_scale = sqrt(inv(Float64(boxlen)^ndim_int))
-    ilevel = 0
-
-    while ilevel < _MAX_TREE_LEVELS
-        ifirstbox = level_first[ilevel + 1]
-        ilastbox = level_last[ilevel + 1]
-        nbloc = ilastbox - ifirstbox + 1
-        refine_flags = falses(nbloc)
-        needs_any_refinement = false
-        level_threshold = eps_value * root_scale * current_rint
-
-        for offset in 1:nbloc
-            ibox = ifirstbox + offset - 1
-            box = boxes[ibox]
-
-            needs_refinement = _kernel_requires_refinement(kernel, box.size)
-            if !needs_refinement
-                error = _modal_tail_error(
-                    box.values,
-                    modal_transforms,
-                    rmask,
-                    rsum,
-                    box.size,
-                    eta,
-                    norder_int,
-                    ndim_int,
-                    nd_int,
-                    coeffs,
-                    coeff_workspace,
-                )
-                needs_refinement = error > level_threshold
-            end
-
-            refine_flags[offset] = needs_refinement
-            needs_any_refinement |= needs_refinement
-        end
-
-        needs_any_refinement || break
-
-        new_level_first = length(boxes) + 1
-        for offset in 1:nbloc
-            refine_flags[offset] || continue
-
-            ibox = ifirstbox + offset - 1
-            box = boxes[ibox]
-            child_values = Vector{Matrix{Float64}}(undef, length(box.children))
-
-            for child in eachindex(child_values)
-                center = _child_center(box.center, box.size, child, ndim_int)
-                child_values[child] = _sample_box(f, center, box.size / 2, reference_grid, nd_int, coord_shift)
-            end
-
-            _split_box!(boxes, ibox, child_values)
-        end
-
-        push!(level_first, new_level_first)
-        push!(level_last, length(boxes))
-        current_rint = max(_global_l2_scale(boxes, quadrature_weights, ndim_int), Base.eps(Float64))
-        ilevel += 1
-    end
-
-    _enforce_level_restriction!(boxes, f, reference_grid, nd_int, _MAX_TREE_LEVELS, coord_shift)
-    return _pack_tree(boxes, basis, ndim_int, norder_int, boxlen, coord_shift)
+    data = build_tree_fortran(
+        f,
+        kernel,
+        basis;
+        ndim = ndim,
+        norder = norder,
+        eps = eps,
+        boxlen = boxlen,
+        nd = nd,
+        eta = eta,
+    )
+    return data.tree, data.fvals
 end
