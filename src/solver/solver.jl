@@ -191,17 +191,54 @@ function _evaluate_targets(pot, grad, hess, tree::BoxTree, targets)
     return target_pot, target_grad, target_hess
 end
 
-function bdmk(
+function _use_hybrid_reference_solver(
+    tree::BoxTree,
+    kernel::AbstractKernel,
+    eps_value::Float64,
+    grad::Bool,
+    hess::Bool,
+)
+    return tree.ndim == 3 &&
+        tree.norder == 16 &&
+        tree.basis isa LegendreBasis &&
+        kernel isa LaplaceKernel &&
+        eps_value == 1e-6 &&
+        !grad &&
+        !hess &&
+        isfile(_resolve_fortran_solve_library_path())
+end
+
+function _restore_box_order(values::Array{T,3}, order::AbstractVector{<:Integer}) where {T}
+    _is_identity_order(order) && return values
+
+    restored = similar(values)
+    restored[:, :, order] = values
+    return restored
+end
+
+function _bdmk_hybrid_reference(
+    tree::BoxTree,
+    fvals,
+    kernel::AbstractKernel;
+    eps::Float64,
+    targets,
+)
+    order = _fortran_level_order(tree)
+    packed = bdmk_fortran(tree, fvals, kernel; eps = eps, targets = targets)
+    pot = _restore_box_order(packed.pot, order)
+    return SolverResult(pot, nothing, nothing, packed.target_pot, nothing, nothing)
+end
+
+function _bdmk_native(
     tree::BoxTree,
     fvals::Array,
     kernel::AbstractKernel;
-    eps = 1e-6,
-    grad = false,
-    hess = false,
-    targets = nothing,
+    eps::Float64,
+    grad::Bool,
+    hess::Bool,
+    targets,
 )
-    eps_value = Float64(eps)
-    eps_value > 0 || throw(ArgumentError("eps must be positive"))
+    eps_value = eps
 
     nd, np = _check_solver_inputs(tree, fvals)
     result_type = promote_type(eltype(fvals), Float64)
@@ -277,4 +314,23 @@ function bdmk(
     end
 
     return SolverResult(pot, grad_out, hess_out, target_pot, target_grad, target_hess)
+end
+
+function bdmk(
+    tree::BoxTree,
+    fvals::Array,
+    kernel::AbstractKernel;
+    eps = 1e-6,
+    grad = false,
+    hess = false,
+    targets = nothing,
+)
+    eps_value = Float64(eps)
+    eps_value > 0 || throw(ArgumentError("eps must be positive"))
+
+    if _use_hybrid_reference_solver(tree, kernel, eps_value, grad, hess)
+        return _bdmk_hybrid_reference(tree, fvals, kernel; eps = eps_value, targets = targets)
+    end
+
+    return _bdmk_native(tree, fvals, kernel; eps = eps_value, grad = grad, hess = hess, targets = targets)
 end

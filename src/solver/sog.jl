@@ -1,4 +1,4 @@
-const SOG_DATA_DIR = joinpath(dirname(@__DIR__), "data", "sog")
+const SOG_DATA_DIR = joinpath(_PACKAGE_ROOT, "data", "sog")
 const SOG_TABLE_CACHE = Dict{String, Any}()
 
 function _sog_filename(kernel::LaplaceKernel, ndim::Int)

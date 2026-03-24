@@ -93,3 +93,43 @@ end
         end
     end
 end
+
+@testset "Tree Matches Fortran Benchmark" begin
+    rsig = 1e-4
+    rsign = rsig^(3 / 2)
+
+    function analytic_rhs_scalar(x)
+        c1 = [0.1, 0.02, 0.04]
+        c2 = [0.03, -0.1, 0.05]
+        s1 = rsig
+        s2 = rsig / 2
+        str1 = 1.0 / (π * rsign)
+        str2 = -0.5 / (π * rsign)
+        rr1 = sum((x .- c1) .^ 2)
+        rr2 = sum((x .- c2) .^ 2)
+        return str1 * exp(-rr1 / s1) * (-6 + 4 * rr1 / s1) / s1 +
+               str2 * exp(-rr2 / s2) * (-6 + 4 * rr2 / s2) / s2
+    end
+
+    function benchmark_rhs(boxlen)
+        shift = fill(Float64(boxlen) / 2, 3)
+        return x -> [analytic_rhs_scalar(x .- shift)]
+    end
+
+    tree, fvals = build_tree(
+        benchmark_rhs(1.18),
+        LaplaceKernel(),
+        LegendreBasis();
+        ndim = 3,
+        norder = 16,
+        eps = 5e-4,
+        boxlen = 1.18,
+        nd = 1,
+        eta = 0.0,
+    )
+
+    @test tree.nlevels == 6
+    @test size(tree.centers, 2) == 1129
+    @test size(fvals) == (1, 16^3, 1129)
+    @test all(0.0 .<= tree.centers .<= 1.18)
+end

@@ -1,4 +1,3 @@
-const _FORTRAN_LIBBOXDMK_PATH = normpath("/mnt/home/xgao1/codes/boxdmk/build/libboxdmk.so")
 const _FORTRAN_CALLBACK_LOCK = ReentrantLock()
 const _FORTRAN_CALLBACK_FUNC = Ref{Any}(nothing)
 const _FORTRAN_CALLBACK_NDIM = Ref{Cint}(0)
@@ -27,8 +26,13 @@ function Base.iterate(data::FortranTreeData, state::Int = 1)
 end
 
 function _fortran_libboxdmk_path()
-    isfile(_FORTRAN_LIBBOXDMK_PATH) || throw(ArgumentError("Fortran library not found at $_FORTRAN_LIBBOXDMK_PATH"))
-    return _FORTRAN_LIBBOXDMK_PATH
+    path = _resolve_fortran_library_path(; must_exist = true)
+    return path
+end
+
+function _fortran_solve_libboxdmk_path()
+    path = _resolve_fortran_solve_library_path(; must_exist = true)
+    return path
 end
 
 function _fortran_kernel(kernel::AbstractKernel)
@@ -333,7 +337,7 @@ function _fortran_bdmk!(
     ifpghtarg_ref = Ref{Cint}(ifpghtarg)
 
     ccall(
-        (:boxdmk_bdmk, _fortran_libboxdmk_path()),
+        (:boxdmk_bdmk, _fortran_solve_libboxdmk_path()),
         Cvoid,
         (
             Ref{Cint},
@@ -475,6 +479,139 @@ end
 
 function _fortran_output_flag(grad::Bool, hess::Bool)
     return Cint(hess ? 3 : (grad ? 2 : 1))
+end
+
+function _fortran_level_order(tree::BoxTree)
+    order = collect(1:nboxes(tree))
+    sort!(order; by = ibox -> (tree.level[ibox], ibox))
+    return order
+end
+
+function _is_identity_order(order::AbstractVector{<:Integer})
+    for (index, value) in pairs(order)
+        value == index || return false
+    end
+    return true
+end
+
+function _reorder_tree(tree::BoxTree, order::AbstractVector{<:Integer})
+    _is_identity_order(order) && return tree
+
+    nb = nboxes(tree)
+    length(order) == nb || throw(ArgumentError("order length must equal the number of boxes"))
+    inverse = zeros(Int, nb)
+    for (new_box, old_box) in pairs(order)
+        inverse[old_box] = new_box
+    end
+
+    centers = tree.centers[:, order]
+    parent = zeros(Int, nb)
+    children = zeros(Int, size(tree.children, 1), nb)
+    colleagues = Vector{Vector{Int}}(undef, nb)
+    level = tree.level[order]
+
+    for new_box in 1:nb
+        old_box = order[new_box]
+        old_parent = tree.parent[old_box]
+        parent[new_box] = old_parent == 0 ? 0 : inverse[old_parent]
+
+        for child_slot in 1:size(children, 1)
+            old_child = tree.children[child_slot, old_box]
+            children[child_slot, new_box] = old_child == 0 ? 0 : inverse[old_child]
+        end
+
+        colleagues[new_box] = [inverse[old_peer] for old_peer in tree.colleagues[old_box]]
+    end
+
+    return BoxTree(
+        tree.ndim,
+        tree.nlevels,
+        centers,
+        copy(tree.boxsize),
+        parent,
+        children,
+        colleagues,
+        level,
+        tree.basis,
+        tree.norder,
+    )
+end
+
+function pack_tree_fortran(tree::BoxTree, fvals)
+    _check_solver_inputs(tree, fvals)
+
+    order = _fortran_level_order(tree)
+    packed_tree = _reorder_tree(tree, order)
+    packed_fvals = _is_identity_order(order) && fvals isa Array{Float64, 3} ? copy(fvals) : Float64.(fvals[:, :, order])
+
+    ndim = packed_tree.ndim
+    nb = nboxes(packed_tree)
+    nl = packed_tree.nlevels
+    mc = 2^ndim
+    mnbors = 3^ndim
+
+    ltree = Cint((4 + mc + mnbors) * nb + 2 * (nl + 1))
+    iptr = Vector{Cint}(undef, 8)
+    iptr[1] = 1
+    iptr[2] = Cint(2 * (nl + 1) + 1)
+    iptr[3] = Cint(iptr[2] + nb)
+    iptr[4] = Cint(iptr[3] + nb)
+    iptr[5] = Cint(iptr[4] + nb)
+    iptr[6] = Cint(iptr[5] + mc * nb)
+    iptr[7] = Cint(iptr[6] + nb)
+    iptr[8] = Cint(iptr[7] + mnbors * nb)
+
+    itree = fill(Cint(-1), Int(ltree))
+
+    next_box = 1
+    for level in 0:nl
+        level_count = count(==(level), packed_tree.level)
+        start_index = next_box
+        end_index = next_box + level_count - 1
+        itree[2 * level + 1] = Cint(start_index)
+        itree[2 * level + 2] = Cint(end_index)
+        next_box = end_index + 1
+    end
+
+    level_ptr = Int(iptr[2])
+    parent_ptr = Int(iptr[3])
+    nchild_ptr = Int(iptr[4])
+    child_ptr = Int(iptr[5])
+    ncoll_ptr = Int(iptr[6])
+    coll_ptr = Int(iptr[7])
+
+    for ibox in 1:nb
+        itree[level_ptr + ibox - 1] = Cint(packed_tree.level[ibox])
+        itree[parent_ptr + ibox - 1] = Cint(packed_tree.parent[ibox] == 0 ? -1 : packed_tree.parent[ibox])
+
+        nchildren = 0
+        for child_slot in 1:mc
+            child_box = packed_tree.children[child_slot, ibox]
+            if child_box == 0
+                itree[child_ptr + (ibox - 1) * mc + child_slot - 1] = Cint(-1)
+            else
+                itree[child_ptr + (ibox - 1) * mc + child_slot - 1] = Cint(child_box)
+                nchildren += 1
+            end
+        end
+        itree[nchild_ptr + ibox - 1] = Cint(nchildren)
+
+        ncoll = min(length(packed_tree.colleagues[ibox]), mnbors)
+        itree[ncoll_ptr + ibox - 1] = Cint(ncoll)
+        for j in 1:mnbors
+            value = j <= ncoll ? packed_tree.colleagues[ibox][j] : -1
+            itree[coll_ptr + (ibox - 1) * mnbors + j - 1] = Cint(value)
+        end
+    end
+
+    shift = packed_tree.boxsize[1] / 2
+    centers = copy(packed_tree.centers)
+    centers .-= shift
+    boxsize = copy(packed_tree.boxsize)
+
+    data = FortranTreeData(packed_tree, packed_fvals, itree, iptr, ltree, centers, boxsize)
+    _FORTRAN_TREE_REGISTRY[packed_fvals] = data
+    return data
 end
 
 """
@@ -727,6 +864,9 @@ function bdmk_fortran(
     targets = nothing,
 )
     _check_solver_inputs(tree, fvals)
-    data = _fortran_registry_lookup(tree, fvals)
+    data = get(_FORTRAN_TREE_REGISTRY, fvals, nothing)
+    if !(data isa FortranTreeData && _matches_fortran_tree(tree, data))
+        data = pack_tree_fortran(tree, fvals)
+    end
     return bdmk_fortran(data, kernel; eps = eps, grad = grad, hess = hess, targets = targets)
 end

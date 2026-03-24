@@ -328,11 +328,11 @@ end
 end
 
 @testset "Fortran PW Hotpaths" begin
-    @test isdefined(BoxDMK, :_LIBBOXDMK_PATH)
+    @test isdefined(BoxDMK, :_resolve_fortran_library_path)
     @test isdefined(BoxDMK, :_FORTRAN_HOTPATHS_AVAILABLE)
 
-    if isdefined(BoxDMK, :_LIBBOXDMK_PATH) && isdefined(BoxDMK, :_FORTRAN_HOTPATHS_AVAILABLE)
-        @test BoxDMK._FORTRAN_HOTPATHS_AVAILABLE[] == isfile(BoxDMK._LIBBOXDMK_PATH)
+    if isdefined(BoxDMK, :_resolve_fortran_library_path) && isdefined(BoxDMK, :_FORTRAN_HOTPATHS_AVAILABLE)
+        @test BoxDMK._FORTRAN_HOTPATHS_AVAILABLE[] == isfile(BoxDMK._resolve_fortran_solve_library_path())
 
         if BoxDMK._FORTRAN_HOTPATHS_AVAILABLE[]
             porder = 2

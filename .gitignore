@@ -3,3 +3,30 @@
 *.jl.mem
 /docs/Manifest*.toml
 /docs/build/
+
+# Local benchmark outputs
+/benchmark/results*.txt
+
+# Vendored Fortran build/install outputs
+/deps/usr/
+/deps/boxdmk_fortran/build/
+/deps/boxdmk_fortran/build_callback/
+/deps/boxdmk_fortran/build_hot/
+
+# Native build artifacts
+*.so
+*.o
+*.a
+*.dll
+*.dylib
+*.mod
+a.out
+
+# CMake-generated files
+CMakeCache.txt
+CMakeFiles/
+CTestTestfile.cmake
+cmake_install.cmake
+compile_commands.json
+install_manifest.txt
+Makefile

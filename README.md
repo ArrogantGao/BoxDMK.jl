@@ -5,121 +5,206 @@
 [![Build Status](https://github.com/ArrogantGao/BoxDMK.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/ArrogantGao/BoxDMK.jl/actions/workflows/CI.yml?query=branch%3Amain)
 [![Coverage](https://codecov.io/gh/ArrogantGao/BoxDMK.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/ArrogantGao/BoxDMK.jl)
 
-A Julia implementation of the **BoxDMK** for fast evaluation of volume potentials on adaptive hierarchical box trees in 3D.
+`BoxDMK.jl` evaluates volume potentials on adaptive box trees in 3D.
 
-Given a source density $f$ defined on a domain $\Omega$ and a kernel $K$ (e.g., Laplace, Yukawa), BoxDMK rapidly computes the volume potential:
+Given a source density `f` and a kernel `K`, it computes
 
-$$u(\mathbf{x}) = \int_\Omega K(\mathbf{x}, \mathbf{y})\, f(\mathbf{y})\, d\mathbf{y}$$
+```math
+u(x) = \int_{\Omega} K(x, y) f(y)\,dy
+```
 
-along with optional gradients and Hessians, to user-specified accuracy.
+on tensor-product box nodes, with optional interpolation to user targets and optional derivative recovery.
 
-## Features
+This repository now contains both:
 
-- **Kernel-independent**: supports Laplace ($1/r$), Yukawa ($e^{-\beta r}/r$), and square-root Laplacian ($1/r^2$) kernels via Sum-of-Gaussians decomposition
-- **Adaptive refinement**: error-driven tree construction with level-restricted balancing
-- **Near-linear complexity**: $O(N)$ evaluation via Box Fast Gauss Transform + hierarchical plane wave expansions
-- **Derivatives**: optional gradient and Hessian computation at no extra algorithmic cost
-- **Target evaluation**: interpolate results to arbitrary points in the domain
-- **Multiple bases**: Legendre and Chebyshev polynomial discretizations
-- **Threaded**: parallelism via `Threads.@threads` in all major passes
+- the Julia implementation,
+- a vendored Fortran reference build used for parity, debugging, and hybrid execution.
+
+## Current Status
+
+There are three practical paths in this repo.
+
+1. Pure Julia: `build_tree(...)` + `bdmk(...)`
+2. Fortran-backed solve on a Julia tree: `build_tree(...)` + `bdmk_fortran(tree, fvals, ...)`
+3. Full Fortran tree + solve: `build_tree_fortran(...)` + `bdmk_fortran(...)`
+
+The validated reference configuration today is:
+
+- Laplace
+- 3D
+- `LegendreBasis()`
+- `norder = 16`
+- `eps = 1e-6`
+- potentials only
+
+For that case, the repo includes a working hybrid path based on:
+
+- Julia tree construction
+- Fortran solve stages
+
+The public `bdmk(...)` entrypoint currently uses that hybrid solve path for the validated reference configuration only. Outside that slice, `bdmk(...)` continues to use the native Julia solver path.
 
 ## Installation
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/ArrogantGao/BoxDMK.jl")
+Pkg.add(url = "https://github.com/ArrogantGao/BoxDMK.jl")
 ```
 
-Requires Julia 1.10 or later.
+Requires Julia `1.10+`.
 
 ## Quick Start
 
 ```julia
 using BoxDMK
 
-# Define a source density function: f(x) → Vector of length nd
-f(x) = [exp(-100 * sum((x .- 0.5).^2))]
+f(x) = [exp(-100 * sum((x .- 0.5) .^ 2))]
 
-# Build adaptive tree
-tree, fvals = build_tree(f, LaplaceKernel(), LegendreBasis();
-    ndim=3, norder=8, eps=1e-6, boxlen=1.0, nd=1)
+tree, fvals = build_tree(
+    f,
+    LaplaceKernel(),
+    LegendreBasis();
+    ndim = 3,
+    norder = 8,
+    eps = 1e-6,
+    boxlen = 1.0,
+    nd = 1,
+)
 
-# Compute volume potential
-result = bdmk(tree, fvals, LaplaceKernel(); eps=1e-6)
+result = bdmk(tree, fvals, LaplaceKernel(); eps = 1e-6)
 
-# Access the potential on the tensor grid
-result.pot  # Array{Float64, 3} of shape (nd, norder^3, nboxes)
+size(result.pot)
 ```
 
-### With gradients and target evaluation
+The returned `SolverResult` contains:
+
+- `pot`
+- `grad` or `nothing`
+- `hess` or `nothing`
+- `target_pot` or `nothing`
+- `target_grad` or `nothing`
+- `target_hess` or `nothing`
+
+## Target Evaluation
 
 ```julia
-# Compute potential + gradient + Hessian
-result = bdmk(tree, fvals, LaplaceKernel();
-    eps=1e-6, grad=true, hess=true)
+targets = rand(3, 100)
 
-result.grad  # (nd, 3, norder^3, nboxes)
-result.hess  # (nd, 6, norder^3, nboxes) — xx, yy, zz, xy, xz, yz
+result = bdmk(
+    tree,
+    fvals,
+    LaplaceKernel();
+    eps = 1e-6,
+    targets = targets,
+)
 
-# Evaluate at arbitrary target points
-targets = rand(3, 100)  # 100 random points in 3D
-result = bdmk(tree, fvals, LaplaceKernel();
-    eps=1e-6, targets=targets)
-
-result.target_pot  # (nd, 100)
+result.target_pot
 ```
 
-### Supported kernels
+For Julia-facing APIs, the physical domain is `[0, boxlen]^3`.
+
+The raw Fortran reference uses a box centered at the origin. The wrappers handle that coordinate shift internally for `build_tree_fortran(...)` and `bdmk_fortran(...)`.
+
+## Kernels And Bases
+
+Supported kernels:
 
 ```julia
-LaplaceKernel()        # 1/(4πr)
-YukawaKernel(β)        # exp(-βr)/(4πr)
-SqrtLaplaceKernel()    # 1/(4πr²)
+LaplaceKernel()
+YukawaKernel(beta)
+SqrtLaplaceKernel()
 ```
 
-### Supported bases
+Supported bases:
 
 ```julia
-LegendreBasis()        # Gauss-Legendre nodes
-ChebyshevBasis()       # Chebyshev nodes
+LegendreBasis()
+ChebyshevBasis()
 ```
 
-## Algorithm
+## Building The Vendored Fortran Libraries
 
-BoxDMK uses a 9-step pipeline:
+The repo vendors the Fortran reference sources under `deps/boxdmk_fortran/`.
 
-1. **Precomputation** — Sum-of-Gaussians decomposition, proxy system setup, interaction list construction
-2. **Taylor corrections** — local corrections for the SOG approximation residual
-3. **Upward pass** — density to proxy charges, anterpolation up the tree
-4. **Multipole plane wave formation** — proxy charges to complex PW expansions
-5. **M2L translation** — plane wave shift between well-separated boxes
-6. **Downward pass** — local PW to proxy potential, interpolation down the tree
-7. **Direct local interactions** — near-field evaluation via precomputed sparse tables
-8. **Asymptotic expansion** — analytical treatment of small-variance Gaussian components
-9. **Output assembly** — proxy potential to user grid, derivative computation
+Build the local shared libraries with:
 
-The algorithm achieves $O(N)$ complexity by decomposing any radial kernel as a sum of Gaussians, then using the Box Fast Gauss Transform at each level of an adaptive tree hierarchy.
+```bash
+julia --project deps/build_fortran_ref.jl
+```
 
-## Parameters
+This produces repo-local libraries under `deps/usr/lib/` and is the supported way to enable:
 
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `ndim` | Spatial dimension (currently 3 only) | `3` |
-| `norder` | Polynomial order per dimension | `6` |
-| `eps` | Target accuracy | `1e-6` |
-| `boxlen` | Root box side length | `1.0` |
-| `nd` | Number of right-hand sides | `1` |
-| `grad` | Compute gradient | `false` |
-| `hess` | Compute Hessian | `false` |
-| `targets` | Evaluation points (ndim × ntarg matrix) | `nothing` |
+- wrapper tests,
+- hybrid parity/debug tooling,
+- the validated hybrid reference solve path.
 
-## Acknowledgments
+## Fortran And Hybrid APIs
 
-This package is a Julia translation of the [Fortran BoxDMK library](https://github.com/flatironinstitute/boxdmk), developed at the Flatiron Institute. The algorithm is based on:
+Build the tree with Fortran:
 
-- The Box Fast Gauss Transform for kernel-independent fast summation
-- Data-driven Sum-of-Gaussians kernel approximation
-- Adaptive hierarchical box tree discretization
+```julia
+ftree = build_tree_fortran(
+    f,
+    LaplaceKernel(),
+    LegendreBasis();
+    ndim = 3,
+    norder = 8,
+    eps = 1e-6,
+    boxlen = 1.0,
+    nd = 1,
+)
+```
+
+Solve with Fortran using either the wrapper object or a Julia tree:
+
+```julia
+result1 = bdmk_fortran(ftree, LaplaceKernel(); eps = 1e-6)
+result2 = bdmk_fortran(tree, fvals, LaplaceKernel(); eps = 1e-6)
+```
+
+The second form is the main hybrid entrypoint for parity/debug work.
+
+## Repository Layout
+
+The source tree is grouped by responsibility:
+
+- `src/core/`: types, utilities, basis/tensor/kernel primitives
+- `src/tree/`: adaptive tree construction, tree data transforms, interaction lists
+- `src/solver/`: SOG tables, proxy/passes, plane-wave pipeline, local tables, derivatives, top-level solver
+- `src/fortran/`: vendored-library paths, hotpaths, wrappers, debug snapshots
+- `benchmark/`: performance and parity drivers
+- `test/`: package regression tests
+- `deps/boxdmk_fortran/`: vendored Fortran reference sources
+
+Generated build outputs under `deps/usr/` and `deps/boxdmk_fortran/build*` are local artifacts and should not be committed.
+
+## Development Workflow
+
+Useful commands:
+
+Run a focused test:
+
+```bash
+julia --project --threads=1 -e 'using BoxDMK; include("test/test_solver.jl")'
+```
+
+Run wrapper and hybrid parity checks:
+
+```bash
+julia --project --threads=1 -e 'using BoxDMK; include("test/test_fortran_wrapper.jl"); include("test/test_hybrid_parity.jl")'
+```
+
+Run the reference hybrid benchmark:
+
+```bash
+JULIA_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 julia --project benchmark/hybrid_parity.jl
+```
+
+## Limitations
+
+- The strongest parity/debug tooling is focused on the Laplace 3D reference case.
+- The native Julia solver path is not yet at full Fortran parity across all configurations.
+- The public hybrid dispatch in `bdmk(...)` is intentionally narrow and currently applies only to the validated reference slice.
 
 ## License
 

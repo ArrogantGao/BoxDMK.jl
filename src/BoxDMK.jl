@@ -6,33 +6,37 @@ using JLD2
 function build_tree end
 function bdmk end
 
-include("types.jl")
-include("utils.jl")
-include("sog.jl")
-if isfile(joinpath(@__DIR__, "proxy.jl"))
-    include("proxy.jl")
-end
-if isfile(joinpath(@__DIR__, "passes.jl"))
-    include("passes.jl")
-end
-include("kernels.jl")
-include("basis.jl")
-include("tensor.jl")
-if isfile(joinpath(@__DIR__, "tree.jl"))
-    include("tree.jl")
-end
-if isfile(joinpath(@__DIR__, "tree_data.jl"))
-    include("tree_data.jl")
-end
-include("derivatives.jl")
-include("interaction_lists.jl")
-include("local_tables.jl")
-include("planewave.jl")
-include("boxfgt.jl")
-include("local.jl")
-include("solver.jl")
-include("fortran_hotpaths.jl")
-include("fortran_wrapper.jl")
+const _SRC_ROOT = @__DIR__
+const _PACKAGE_ROOT = normpath(joinpath(_SRC_ROOT, ".."))
+
+# Core
+include("core/types.jl")
+include("core/utils.jl")
+include("solver/sog.jl")
+include("solver/proxy.jl")
+include("solver/passes.jl")
+include("core/kernels.jl")
+include("core/basis.jl")
+include("core/tensor.jl")
+
+# Tree construction and geometry
+include("tree/tree.jl")
+include("tree/tree_data.jl")
+include("solver/derivatives.jl")
+include("tree/interaction_lists.jl")
+
+# Solver pipeline
+include("solver/local_tables.jl")
+include("fortran/fortran_paths.jl")
+include("solver/planewave.jl")
+include("solver/boxfgt.jl")
+include("solver/local.jl")
+include("solver/solver.jl")
+
+# Fortran integration
+include("fortran/fortran_hotpaths.jl")
+include("fortran/fortran_wrapper.jl")
+include("fortran/fortran_debug_wrapper.jl")
 
 export LaplaceKernel, YukawaKernel, SqrtLaplaceKernel
 export LegendreBasis, ChebyshevBasis
@@ -50,6 +54,7 @@ export build_pw_shift_matrices, kernel_fourier_transform, setup_planewave_data
 export DeltaGroups, get_delta_cutoff_level, group_deltas_by_level
 export boxfgt!, handle_fat_gaussian!
 export apply_local!
-export FortranTreeData, build_tree_fortran, bdmk_fortran
+export FortranTreeData, build_tree_fortran, pack_tree_fortran, bdmk_fortran
+export reset_fortran_debug!, get_fortran_debug_snapshot
 
 end
