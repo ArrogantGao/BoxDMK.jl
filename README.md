@@ -22,27 +22,24 @@ This repository now contains both:
 
 ## Current Status
 
-There are three practical paths in this repo.
+The default workflow is now:
 
-1. Pure Julia: `build_tree(...)` + `bdmk(...)`
-2. Fortran-backed solve on a Julia tree: `build_tree(...)` + `bdmk_fortran(tree, fvals, ...)`
-3. Full Fortran tree + solve: `build_tree_fortran(...)` + `bdmk_fortran(...)`
+1. Build the tree in Julia with `build_tree(...)`
+2. Solve through the public `bdmk(...)` API
 
-The validated reference configuration today is:
+For the validated Laplace workflow, `bdmk(...)` uses the vendored Fortran solve backend. That is the standard supported path for correctness and performance in this repo.
 
-- Laplace
-- 3D
-- `LegendreBasis()`
-- `norder = 16`
-- `eps = 1e-6`
-- potentials only
+The direct Fortran entrypoints remain available for advanced use:
 
-For that case, the repo includes a working hybrid path based on:
+- `bdmk_fortran(tree, fvals, ...)` for parity/debug work
+- `build_tree_fortran(...)` when you explicitly want the Fortran tree builder
+
+In practice, if your source density is a Julia function, the recommended Laplace path is still:
 
 - Julia tree construction
-- Fortran solve stages
+- Fortran evaluation
 
-The public `bdmk(...)` entrypoint currently uses that hybrid solve path for the validated reference configuration only. Outside that slice, `bdmk(...)` continues to use the native Julia solver path.
+because `build_tree_fortran(...)` must callback from Fortran into Julia for RHS sampling.
 
 ## Installation
 
@@ -52,6 +49,20 @@ Pkg.add(url = "https://github.com/ArrogantGao/BoxDMK.jl")
 ```
 
 Requires Julia `1.10+`.
+
+## Build The Vendored Fortran Libraries
+
+The public solver requires the vendored Fortran shared libraries at package load.
+
+From the package root, build them with:
+
+```bash
+julia --project deps/build_fortran_ref.jl
+```
+
+This produces repo-local libraries under `deps/usr/lib/`.
+
+If the solve library is missing, `using BoxDMK` will throw an error telling you to run that command.
 
 ## Quick Start
 
@@ -84,6 +95,8 @@ The returned `SolverResult` contains:
 - `target_pot` or `nothing`
 - `target_grad` or `nothing`
 - `target_hess` or `nothing`
+
+`bdmk(...)` is the normal entrypoint. For Laplace solves, it uses the Fortran solve backend behind the public Julia API.
 
 ## Target Evaluation
 
@@ -122,25 +135,28 @@ LegendreBasis()
 ChebyshevBasis()
 ```
 
-## Building The Vendored Fortran Libraries
-
-The repo vendors the Fortran reference sources under `deps/boxdmk_fortran/`.
-
-Build the local shared libraries with:
-
-```bash
-julia --project deps/build_fortran_ref.jl
-```
-
-This produces repo-local libraries under `deps/usr/lib/` and is the supported way to enable:
-
-- wrapper tests,
-- hybrid parity/debug tooling,
-- the validated hybrid reference solve path.
-
 ## Fortran And Hybrid APIs
 
-Build the tree with Fortran:
+The default public workflow is:
+
+```julia
+tree, fvals = build_tree(...)
+result = bdmk(tree, fvals, kernel; eps = 1e-6)
+```
+
+If you want to call the Fortran solve wrapper explicitly, you can still do:
+
+```julia
+result = bdmk_fortran(tree, fvals, LaplaceKernel(); eps = 1e-6)
+```
+
+For Laplace kernels, the public `bdmk(...)` path already uses the same Fortran solve backend. Calling `bdmk_fortran(...)` explicitly is mainly useful for:
+
+- parity checks,
+- benchmark/debug tooling,
+- explicit wrapper tests.
+
+You can also build the tree with Fortran:
 
 ```julia
 ftree = build_tree_fortran(
@@ -155,14 +171,7 @@ ftree = build_tree_fortran(
 )
 ```
 
-Solve with Fortran using either the wrapper object or a Julia tree:
-
-```julia
-result1 = bdmk_fortran(ftree, LaplaceKernel(); eps = 1e-6)
-result2 = bdmk_fortran(tree, fvals, LaplaceKernel(); eps = 1e-6)
-```
-
-The second form is the main hybrid entrypoint for parity/debug work.
+Use that only when you specifically want the Fortran tree builder. For Julia-defined source functions, it is usually slower than `build_tree(...)` because it repeatedly callbacks from Fortran into Julia.
 
 ## Repository Layout
 
@@ -202,9 +211,9 @@ JULIA_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 julia --project benchmark/hybrid_pari
 
 ## Limitations
 
-- The strongest parity/debug tooling is focused on the Laplace 3D reference case.
-- The native Julia solver path is not yet at full Fortran parity across all configurations.
-- The public hybrid dispatch in `bdmk(...)` is intentionally narrow and currently applies only to the validated reference slice.
+- The vendored Fortran solve library is a required runtime dependency for the public solver.
+- The strongest parity/debug tooling is still focused on the Laplace 3D reference case.
+- The native Julia solver internals remain in the repo for debugging and development and are still used for kernels outside the validated Laplace-backed path.
 
 ## License
 

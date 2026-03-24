@@ -1,4 +1,5 @@
 const _EXTERNAL_FORTRAN_LIBBOXDMK_PATH = normpath("/mnt/home/xgao1/codes/boxdmk/build/libboxdmk.so")
+const _BUILD_FORTRAN_REF_CMD = "julia --project deps/build_fortran_ref.jl"
 
 _vendored_fortran_root() = normpath(joinpath(_PACKAGE_ROOT, "deps", "boxdmk_fortran"))
 _vendored_fortran_build_root() = normpath(joinpath(_PACKAGE_ROOT, "deps", "usr"))
@@ -48,4 +49,13 @@ function _resolve_fortran_solve_library_path(; debug::Bool = false, must_exist::
 
     must_exist && throw(ArgumentError("Fortran solve library not found. Checked: $(join(candidates, ", "))"))
     return first(candidates)
+end
+
+function _require_fortran_solve_library!(; path::AbstractString = _resolve_fortran_solve_library_path())
+    isfile(path) && return path
+
+    candidates = _fortran_solve_library_candidates()
+    throw(ArgumentError(
+        "Required Fortran solve library not found at $(path). Checked: $(join(candidates, ", ")). Build it with `$_BUILD_FORTRAN_REF_CMD`.",
+    ))
 end

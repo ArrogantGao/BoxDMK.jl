@@ -218,3 +218,54 @@ end
     @test public.target_grad === nothing
     @test public.target_hess === nothing
 end
+
+@testset "Public Solver Uses Hybrid Outside Reference Slice" begin
+    kernel = LaplaceKernel()
+    basis = LegendreBasis()
+    eps_tree = 1e-2
+    eps_solve = 1e-2
+    targets = [
+        0.20  0.35  0.65;
+        0.25  0.55  0.70;
+        0.30  0.60  0.80;
+    ]
+
+    tree, fvals = build_tree(
+        _hybrid_debug_source,
+        kernel,
+        basis;
+        ndim = 3,
+        norder = 4,
+        eps = eps_tree,
+        boxlen = 1.0,
+        nd = 1,
+        eta = 1.0,
+    )
+
+    packed_order = BoxDMK._fortran_level_order(tree)
+    reference = bdmk_fortran(tree, fvals, kernel; eps = eps_solve, grad = true, hess = true, targets = targets)
+    public = bdmk(tree, fvals, kernel; eps = eps_solve, grad = true, hess = true, targets = targets)
+
+    reorder3(a) = begin
+        out = similar(a)
+        out[:, :, packed_order] = a
+        out
+    end
+    reorder4(a) = begin
+        out = similar(a)
+        out[:, :, :, packed_order] = a
+        out
+    end
+    reorder5(a) = begin
+        out = similar(a)
+        out[:, :, :, :, packed_order] = a
+        out
+    end
+
+    @test public.pot ≈ reorder3(reference.pot) atol = 1e-11 rtol = 1e-11
+    @test public.grad ≈ reorder4(reference.grad) atol = 1e-11 rtol = 1e-11
+    @test public.hess ≈ reorder4(reference.hess) atol = 1e-11 rtol = 1e-11
+    @test public.target_pot ≈ reference.target_pot atol = 1e-11 rtol = 1e-11
+    @test public.target_grad ≈ reference.target_grad atol = 1e-11 rtol = 1e-11
+    @test public.target_hess ≈ reference.target_hess atol = 1e-11 rtol = 1e-11
+end

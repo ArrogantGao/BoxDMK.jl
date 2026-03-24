@@ -191,42 +191,40 @@ function _evaluate_targets(pot, grad, hess, tree::BoxTree, targets)
     return target_pot, target_grad, target_hess
 end
 
-function _use_hybrid_reference_solver(
-    tree::BoxTree,
-    kernel::AbstractKernel,
-    eps_value::Float64,
-    grad::Bool,
-    hess::Bool,
-)
-    return tree.ndim == 3 &&
-        tree.norder == 16 &&
-        tree.basis isa LegendreBasis &&
-        kernel isa LaplaceKernel &&
-        eps_value == 1e-6 &&
-        !grad &&
-        !hess &&
-        isfile(_resolve_fortran_solve_library_path())
-end
+_restore_box_order(values::Nothing, order::AbstractVector{<:Integer}) = nothing
 
-function _restore_box_order(values::Array{T,3}, order::AbstractVector{<:Integer}) where {T}
+function _restore_box_order(values::AbstractArray{T,N}, order::AbstractVector{<:Integer}) where {T,N}
     _is_identity_order(order) && return values
 
     restored = similar(values)
-    restored[:, :, order] = values
+    leading = ntuple(_ -> Colon(), N - 1)
+    restored[leading..., order] = values
     return restored
 end
 
-function _bdmk_hybrid_reference(
+function _use_hybrid_default_solver(tree::BoxTree, kernel::AbstractKernel)
+    return tree.ndim == 3 && kernel isa LaplaceKernel
+end
+
+function _bdmk_hybrid_default(
     tree::BoxTree,
     fvals,
     kernel::AbstractKernel;
     eps::Float64,
+    grad::Bool,
+    hess::Bool,
     targets,
 )
     order = _fortran_level_order(tree)
-    packed = bdmk_fortran(tree, fvals, kernel; eps = eps, targets = targets)
-    pot = _restore_box_order(packed.pot, order)
-    return SolverResult(pot, nothing, nothing, packed.target_pot, nothing, nothing)
+    packed = bdmk_fortran(tree, fvals, kernel; eps = eps, grad = grad, hess = hess, targets = targets)
+    return SolverResult(
+        _restore_box_order(packed.pot, order),
+        _restore_box_order(packed.grad, order),
+        _restore_box_order(packed.hess, order),
+        packed.target_pot,
+        packed.target_grad,
+        packed.target_hess,
+    )
 end
 
 function _bdmk_native(
@@ -328,9 +326,9 @@ function bdmk(
     eps_value = Float64(eps)
     eps_value > 0 || throw(ArgumentError("eps must be positive"))
 
-    if _use_hybrid_reference_solver(tree, kernel, eps_value, grad, hess)
-        return _bdmk_hybrid_reference(tree, fvals, kernel; eps = eps_value, targets = targets)
+    if !_use_hybrid_default_solver(tree, kernel)
+        return _bdmk_native(tree, fvals, kernel; eps = eps_value, grad = grad, hess = hess, targets = targets)
     end
 
-    return _bdmk_native(tree, fvals, kernel; eps = eps_value, grad = grad, hess = hess, targets = targets)
+    return _bdmk_hybrid_default(tree, fvals, kernel; eps = eps_value, grad = grad, hess = hess, targets = targets)
 end

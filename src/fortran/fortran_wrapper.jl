@@ -115,6 +115,7 @@ function _fortran_callback(
 end
 
 function __init__()
+    _require_fortran_solve_library!()
     _init_fortran_hotpaths()
     _FORTRAN_CALLBACK_PTR[] = @cfunction(
         _fortran_callback,
