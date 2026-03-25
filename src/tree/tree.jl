@@ -2,6 +2,51 @@ const _MAX_TREE_LEVELS = 200
 
 _lev(ilev) = ilev + 1
 
+"""
+    _BoxSampler{F,B}
+
+Wraps user function(s) for box evaluation. Holds either a point-by-point
+function `f(x) -> Vector/Number` or a batch function `f_batch!(values, points)`.
+When both are provided, the batch path is used for speed.
+"""
+struct _BoxSampler{F,B}
+    f::F               # point-by-point: f(x) -> Vector or Number
+    f_batch::B         # batch: f_batch!(values::Matrix, points::Matrix) -> nothing
+    points_buf::Matrix{Float64}  # pre-allocated (ndim, npbox) workspace
+end
+
+function _BoxSampler(f::F, ndim::Int, npbox::Int) where {F}
+    return _BoxSampler{F,Nothing}(f, nothing, Matrix{Float64}(undef, ndim, npbox))
+end
+
+function _BoxSampler(f::F, f_batch::B, ndim::Int, npbox::Int) where {F,B}
+    return _BoxSampler{F,B}(f, f_batch, Matrix{Float64}(undef, ndim, npbox))
+end
+
+function _eval_box!(
+    values::AbstractMatrix{Float64},
+    sampler::_BoxSampler{F,Nothing},
+    center::AbstractVector,
+    boxsize::Real,
+    grid::AbstractMatrix,
+    nd::Int,
+    coord_shift::Real,
+) where {F}
+    _sample_box_into!(values, sampler.f, center, boxsize, grid, nd, coord_shift)
+end
+
+function _eval_box!(
+    values::AbstractMatrix{Float64},
+    sampler::_BoxSampler{F,B},
+    center::AbstractVector,
+    boxsize::Real,
+    grid::AbstractMatrix,
+    nd::Int,
+    coord_shift::Real,
+) where {F,B}
+    _sample_box_batch!(values, sampler.f_batch, sampler.points_buf, center, boxsize, grid, nd, coord_shift)
+end
+
 mutable struct _FortranTreeState
     ndim::Int
     mc::Int
@@ -184,8 +229,49 @@ function _sample_box(
     coord_shift::Real = 0.0,
 ) where {T<:Real}
     np = size(grid, 2)
-    ndim = length(center)
     values = Matrix{Float64}(undef, nd, np)
+    _sample_box_into!(values, f, center, boxsize, grid, nd, coord_shift)
+    return values
+end
+
+"""
+    _build_points!(points, center, boxsize, grid, coord_shift)
+
+Build all evaluation points for a box into a pre-allocated matrix.
+`points` is `(ndim, npbox)`.
+"""
+function _build_points!(
+    points::AbstractMatrix{Float64},
+    center::AbstractVector,
+    boxsize::Real,
+    grid::AbstractMatrix,
+    coord_shift::Real,
+)
+    np = size(grid, 2)
+    ndim = size(grid, 1)
+    halfsize = Float64(boxsize) / 2
+    shift = Float64(coord_shift)
+
+    @inbounds for ipoint in 1:np
+        for d in 1:ndim
+            points[d, ipoint] = Float64(center[d]) + halfsize * Float64(grid[d, ipoint]) + shift
+        end
+    end
+
+    return points
+end
+
+function _sample_box_into!(
+    values::AbstractMatrix{Float64},
+    f::F,
+    center::AbstractVector,
+    boxsize::Real,
+    grid::AbstractMatrix,
+    nd::Int,
+    coord_shift::Real,
+) where {F}
+    np = size(grid, 2)
+    ndim = length(center)
     point = Vector{Float64}(undef, ndim)
     halfsize = Float64(boxsize) / 2
     shift = Float64(coord_shift)
@@ -196,13 +282,37 @@ function _sample_box(
         end
 
         raw = f(point)
-        length(raw) == nd || throw(DimensionMismatch("f(x) must return a vector of length $nd"))
 
-        @inbounds for idim in 1:nd
-            values[idim, ipoint] = Float64(raw[idim])
+        if raw isa Number
+            @inbounds values[1, ipoint] = Float64(raw)
+        else
+            @inbounds for idim in 1:nd
+                values[idim, ipoint] = Float64(raw[idim])
+            end
         end
     end
 
+    return values
+end
+
+"""
+    _sample_box_batch!(values, f_batch!, points, center, boxsize, grid, nd, coord_shift)
+
+Evaluate function on all box points at once using `f_batch!(values, points)`.
+`values` is `(nd, npbox)`, `points` is `(ndim, npbox)`.
+"""
+function _sample_box_batch!(
+    values::AbstractMatrix{Float64},
+    f_batch!::F,
+    points::AbstractMatrix{Float64},
+    center::AbstractVector,
+    boxsize::Real,
+    grid::AbstractMatrix,
+    nd::Int,
+    coord_shift::Real,
+) where {F}
+    _build_points!(points, center, boxsize, grid, coord_shift)
+    f_batch!(values, points)
     return values
 end
 
@@ -271,7 +381,7 @@ end
 
 function _ftstate_init_root!(
     state::_FortranTreeState,
-    f,
+    sampler::_BoxSampler,
     grid::AbstractMatrix{<:Real},
     wts2::AbstractVector{<:Real},
     boxlen::Real,
@@ -279,7 +389,7 @@ function _ftstate_init_root!(
 )
     boxlen_value = Float64(boxlen)
     state.boxsize[_lev(0)] = boxlen_value
-    state.fvals[:, :, 1] .= _sample_box(f, zeros(Float64, state.ndim), boxlen_value, grid, size(state.fvals, 1), coord_shift)
+    _eval_box!(@view(state.fvals[:, :, 1]), sampler, zeros(Float64, state.ndim), boxlen_value, grid, size(state.fvals, 1), coord_shift)
 
     rsc = boxlen_value^2 / state.mc
     state.rintbs[1] = 0.0
@@ -352,7 +462,7 @@ function _ftstate_refine_boxes!(
     nbloc::Int,
     bs::Real,
     nlctr::Int,
-    f,
+    sampler::_BoxSampler,
     grid::AbstractMatrix{<:Real},
     coord_shift::Real,
 )
@@ -378,8 +488,9 @@ function _ftstate_refine_boxes!(
                 state.centers[k, jbox] = state.centers[k, ibox] + sign * bsh
             end
 
-            state.fvals[:, :, jbox] .= _sample_box(
-                f,
+            _eval_box!(
+                @view(state.fvals[:, :, jbox]),
+                sampler,
                 @view(state.centers[:, jbox]),
                 bs_value,
                 grid,
@@ -442,7 +553,7 @@ end
 
 function _ftstate_adaptive_refine!(
     state::_FortranTreeState,
-    f,
+    sampler::_BoxSampler,
     grid::AbstractMatrix{<:Real},
     wts2::AbstractVector{<:Real},
     modal_transforms::Tuple,
@@ -500,7 +611,7 @@ function _ftstate_adaptive_refine!(
             nbloc,
             state.boxsize[_lev(ilev + 1)],
             ilev + 1,
-            f,
+            sampler,
             grid,
             state.boxsize[_lev(0)] / 2,
         )
@@ -582,7 +693,7 @@ function _ftstate_refine_boxes_flag!(
     nbloc::Int,
     bs::Real,
     nlctr::Int,
-    f,
+    sampler::_BoxSampler,
     grid::AbstractMatrix{<:Real},
     coord_shift::Real,
 )
@@ -609,8 +720,9 @@ function _ftstate_refine_boxes_flag!(
                 state.centers[k, jbox] = state.centers[k, ibox] + sign * bsh
             end
 
-            state.fvals[:, :, jbox] .= _sample_box(
-                f,
+            _eval_box!(
+                @view(state.fvals[:, :, jbox]),
+                sampler,
                 @view(state.centers[:, jbox]),
                 bs_value,
                 grid,
@@ -718,7 +830,7 @@ end
 
 function _ftstate_fix_lr!(
     state::_FortranTreeState,
-    f,
+    sampler::_BoxSampler,
     grid::AbstractMatrix{<:Real},
     coord_shift::Real,
 )
@@ -786,7 +898,7 @@ function _ftstate_fix_lr!(
             nbloc,
             state.boxsize[_lev(ilev + 1)],
             ilev,
-            f,
+            sampler,
             grid,
             coord_shift,
         )
@@ -816,7 +928,7 @@ function _ftstate_fix_lr!(
             nbloc,
             state.boxsize[_lev(ilev + 1)],
             ilev,
-            f,
+            sampler,
             grid,
             coord_shift,
         )
@@ -828,7 +940,7 @@ function _ftstate_fix_lr!(
             nbloc_tail,
             state.boxsize[_lev(ilev + 1)],
             ilev,
-            f,
+            sampler,
             grid,
             coord_shift,
         )
@@ -853,6 +965,7 @@ function build_tree(
     nd::Integer = 1,
     dpars = nothing,
     eta::Real = 1.0,
+    f_batch = nothing,
 )
     _ = dpars
     ndim_int = Int(ndim)
@@ -881,22 +994,25 @@ function build_tree(
 
     coord_shift = boxlen_value / 2
 
+    # Build sampler — use batch path if f_batch provided, else point-by-point
+    sampler = f_batch === nothing ? _BoxSampler(f, ndim_int, npbox) : _BoxSampler(f, f_batch, ndim_int, npbox)
+
     # Initialize state
     nbmax = 10_000
     state = _ftstate_init(ndim_int, nd_int, npbox, nbmax, _MAX_TREE_LEVELS)
 
     # Initialize root box and rint
-    _ftstate_init_root!(state, f, grid, wts2, boxlen_value, coord_shift)
+    _ftstate_init_root!(state, sampler, grid, wts2, boxlen_value, coord_shift)
 
     # Adaptive refinement
-    _ftstate_adaptive_refine!(state, f, grid, wts2, modal_transforms, rmask, rsum, eps_value, eta_value, norder_int)
+    _ftstate_adaptive_refine!(state, sampler, grid, wts2, modal_transforms, rmask, rsum, eps_value, eta_value, norder_int)
 
     # Compute colleagues (unconditionally)
     _ftstate_computecoll!(state)
 
     # Level restriction (only if nlevels >= 2)
     if state.nlevels >= 2
-        _ftstate_fix_lr!(state, f, grid, coord_shift)
+        _ftstate_fix_lr!(state, sampler, grid, coord_shift)
     end
 
     # Materialize into BoxTree + fvals
