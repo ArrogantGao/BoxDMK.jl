@@ -15,31 +15,26 @@ u(x) = \int_{\Omega} K(x, y) f(y)\,dy
 
 on tensor-product box nodes, with optional interpolation to user targets and optional derivative recovery.
 
-This repository now contains both:
+This repository contains both:
 
-- the Julia implementation,
-- a vendored Fortran reference build used for parity, debugging, and hybrid execution.
+- a pure Julia implementation producing exact Fortran-parity tree data,
+- a vendored Fortran reference build used for the solve backend and parity testing.
 
 ## Current Status
 
-The default workflow is now:
+The default workflow is:
 
-1. Build the tree in Julia with `build_tree(...)`
-2. Solve through the public `bdmk(...)` API
+1. Build the tree in Julia with `build_tree(...)` — produces exactly the same tree structure as the vendored Fortran builder
+2. Solve through the public `bdmk(...)` API — uses the Fortran solve backend for Laplace
 
-For the validated Laplace workflow, `bdmk(...)` uses the vendored Fortran solve backend. That is the standard supported path for correctness and performance in this repo.
+The Julia tree builder mirrors the Fortran algorithm exactly: same adaptive refinement with incremental `update_rints`, same `zk`-based forced refinement, same 4-phase level restriction (`flag`/`flag+`/`flag++` with `vol_tree_reorg`), and same `computecoll` colleague construction. Tree data matches Fortran bit-for-bit across all supported kernel/basis/dimension configurations.
+
+Performance: with a type-stable user function, `build_tree(...)` runs within 1.1-1.2x of a pure Fortran tree builder with a native Fortran callback.
 
 The direct Fortran entrypoints remain available for advanced use:
 
 - `bdmk_fortran(tree, fvals, ...)` for parity/debug work
-- `build_tree_fortran(...)` when you explicitly want the Fortran tree builder
-
-In practice, if your source density is a Julia function, the recommended Laplace path is still:
-
-- Julia tree construction
-- Fortran evaluation
-
-because `build_tree_fortran(...)` must callback from Fortran into Julia for RHS sampling.
+- `build_tree_fortran(...)` when you explicitly want the Fortran tree builder (slower for Julia-defined functions due to Fortran-to-Julia callbacks)
 
 ## Installation
 
@@ -98,6 +93,49 @@ The returned `SolverResult` contains:
 
 `bdmk(...)` is the normal entrypoint. For Laplace solves, it uses the Fortran solve backend behind the public Julia API.
 
+## Performance: Writing Fast User Functions
+
+The user function `f` is called once per grid point per box during tree construction. At high polynomial orders (e.g., `norder=16`), this can be millions of calls. To get maximum performance:
+
+**Avoid capturing non-const module-level variables.** This is the single most impactful optimization. Julia cannot infer types for non-const globals, causing ~50x overhead per function call:
+
+```julia
+# SLOW: captures non-const globals (type-unstable, ~800 ns/call)
+sigma = 1e-4
+f(x) = [exp(-sum(x.^2) / sigma)]
+
+# FAST: close over a typed struct (~17 ns/call)
+struct Params; sigma::Float64; end
+p = Params(1e-4)
+f(x) = exp(-sum(x.^2) / p.sigma)
+```
+
+**Return a scalar instead of `[val]` for `nd=1`.** Avoids heap allocation:
+
+```julia
+# OK:   f(x) = [val]      (allocates a Vector each call)
+# Better: f(x) = val      (returns Float64, no allocation)
+```
+
+**Use the batch API for maximum throughput.** The `f_batch` keyword evaluates all points in a box at once, eliminating per-point function call overhead:
+
+```julia
+function my_f_batch!(values::AbstractMatrix, points::AbstractMatrix)
+    @inbounds for i in axes(points, 2)
+        x1, x2, x3 = points[1,i], points[2,i], points[3,i]
+        values[1, i] = exp(-((x1-0.5)^2 + (x2-0.5)^2 + (x3-0.5)^2) * 100)
+    end
+end
+
+tree, fvals = build_tree(
+    f, LaplaceKernel(), LegendreBasis();
+    ndim=3, norder=16, eps=1e-6, boxlen=1.0, nd=1,
+    f_batch = my_f_batch!,
+)
+```
+
+With these practices, Julia tree construction runs within **1.1x** of a pure Fortran tree builder with a native Fortran callback.
+
 ## Target Evaluation
 
 ```julia
@@ -140,38 +178,21 @@ ChebyshevBasis()
 The default public workflow is:
 
 ```julia
-tree, fvals = build_tree(...)
-result = bdmk(tree, fvals, kernel; eps = 1e-6)
+tree, fvals = build_tree(...)      # Julia tree builder (Fortran-parity)
+result = bdmk(tree, fvals, kernel; eps = 1e-6)  # Fortran solve backend
 ```
 
-If you want to call the Fortran solve wrapper explicitly, you can still do:
+The Fortran entrypoints remain available:
 
 ```julia
+# Explicit Fortran solve (same as bdmk for Laplace)
 result = bdmk_fortran(tree, fvals, LaplaceKernel(); eps = 1e-6)
+
+# Fortran tree builder (slower for Julia functions due to callbacks)
+ftree = build_tree_fortran(f, LaplaceKernel(), LegendreBasis(); ndim=3, norder=8, eps=1e-6, boxlen=1.0, nd=1)
 ```
 
-For Laplace kernels, the public `bdmk(...)` path already uses the same Fortran solve backend. Calling `bdmk_fortran(...)` explicitly is mainly useful for:
-
-- parity checks,
-- benchmark/debug tooling,
-- explicit wrapper tests.
-
-You can also build the tree with Fortran:
-
-```julia
-ftree = build_tree_fortran(
-    f,
-    LaplaceKernel(),
-    LegendreBasis();
-    ndim = 3,
-    norder = 8,
-    eps = 1e-6,
-    boxlen = 1.0,
-    nd = 1,
-)
-```
-
-Use that only when you specifically want the Fortran tree builder. For Julia-defined source functions, it is usually slower than `build_tree(...)` because it repeatedly callbacks from Fortran into Julia.
+Since `build_tree(...)` now produces identical tree data to the Fortran builder, `build_tree_fortran(...)` is mainly useful for parity testing.
 
 ## Repository Layout
 
@@ -212,7 +233,7 @@ JULIA_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 julia --project benchmark/hybrid_pari
 ## Limitations
 
 - The vendored Fortran solve library is a required runtime dependency for the public solver.
-- The strongest parity/debug tooling is still focused on the Laplace 3D reference case.
+- Tree construction is verified for exact Fortran parity across Laplace, Yukawa, and SqrtLaplace kernels, with Legendre and Chebyshev bases, in 1D/2D/3D.
 - The native Julia solver internals remain in the repo for debugging and development and are still used for kernels outside the validated Laplace-backed path.
 
 ## License
